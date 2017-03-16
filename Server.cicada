@@ -1,0 +1,473 @@
+PathName := "/var/www/wormulator/"
+
+max_memory := 1e9
+max_time := 60*30
+max_counter := 1000
+
+
+
+| Subroutines
+
+
+| reads in a hexidecimal character and converts it to a number
+
+ReadHex :: {
+    
+    ans :: char
+    
+    
+    code
+    
+    ans = args[1]
+    
+    if ans >= 48 and ans <= 57  then ans = that-48
+    else if ans >= 65 and ans <= 70  then ans = that-65+10
+    else if ans >= 97 and ans <= 102  then ans = that-97+10
+    else  ErrorScreen("Form error")
+
+    return new(ans)
+}
+
+
+
+
+in_nm :: {
+    lp_DNA := 50
+    tlp_DNA := 104
+    twist_DNA := lp_DNA/98      | twist length = 1 / twist rate
+    length_bp := .3
+    
+    multiplier :: double
+    in_nm_params :: { rev :: bool }
+    
+    
+    code
+    
+    in_nm_params.rev = false
+    (in_nm_params << args)()
+    
+    if args[2] == params.lp  then multiplier = persistence_length
+    else if args[2] == params.DNA_lp  then multiplier = lp_DNA
+    else if args[2] == params.DNA_tlp  then multiplier = tlp_DNA
+    else if args[2] == params.DNA_twist  then multiplier = twist_DNA
+    else if args[2] == params.nm  then multiplier = 1
+    else if args[2] == params.A  then multiplier = 0.1
+    else if args[2] == params.bp  then multiplier = length_bp
+    else if args[2] == params.kb  then multiplier = length_bp*1000
+    
+    if in_nm_params.rev  then multiplier = 1 / that
+    
+    return args[1] * multiplier
+}
+
+
+
+
+| prints an error HTML page and bails out
+
+ErrorScreen :: {
+    
+    code
+    
+    comps = false
+    
+    HTML_print("<TITLE> Error </TITLE>\0D\n"; flush = true)
+    HTML_print("<H3> Error </H3>\0D\n"; flush = true)
+    HTML_print("<P> ", args, "\0D\n"; flush = true)
+    
+    exit
+}
+
+
+
+| HTML field params
+
+
+disp :: u0 :: uf :: { x :: y :: z :: double }
+return_units :: double
+ef_answer :: ef_ans2 :: mc_answer :: *
+disp_unit_text := { "lp", 0, 0, 0, "nm", "A" }
+c_2 :: sum_R :: int
+comps := false
+counter_header_text := gauss_header_text := ef_header_text := mc_header_text := header_text := ""
+thin_columns_num :: thick_columns_num :: int
+avg_tangent :: sum_tangent :: sum_twist :: bool
+
+params :: {
+    lp := 1, DNA_lp := 2, DNA_tlp := 3, DNA_twist := 4, nm := 5, A := 6, bp := 7, kb := 8
+    contour_length_units :: persistence_length_units :: twist_persistence_length_units :: unstressed_twist_units :: int
+    contour_length :: persistence_length :: twist_persistence_length :: unstressed_twist :: relative_twist :: double
+    
+    sum := 1, vec := 2, dist := 3, avg := 4, angle := 5
+    disp :: u0 :: uf :: twist_menu :: disp_units :: int
+    X_or_R :: Y :: Z :: double
+    u0_x := @root.u0[1], u0_y := @root.u0[2], u0_z := @root.u0[3]
+    uf_x := @root.uf[1], uf_y := @root.uf[2], uf_z := @root.uf[3]
+    
+    on := true
+    eigenfunction := monte_carlo := gaussian := false
+    return_units :: int
+    
+    ef_mode :: int
+    saved := 1, custom := 2
+    l_max :: int
+    K_step :: K_max :: theta_step_num :: phi_step_num :: double
+    
+    dist_evals := 1000
+    samples_num :: int
+    segments_per_lp :: sampling_radius :: dangle :: double
+    
+    loop_init := false
+    c_min :: c_max :: c_step :: c :: double
+    c = 0
+    
+    pi := @root.pi
+    e := @root.e                }
+
+
+HTML_print :: {
+    
+    str := save_str := ""
+    
+    params :: { flush :: bool }
+    
+    
+    code
+    
+    if comps  then return
+    
+    params.flush = false
+    (params<<args)()
+    
+    print_string(str, str, args)
+    
+    if not params.flush  then &
+        print_string(save_str, str, 
+                        "<script language=\"javascript\">\n",
+                        "window.setTimeout(\"document.forms[0].submit()\", 30000);\n"
+                        "</script>\n"
+                        "<a href='javascript:document.forms[0].submit()'>Refresh now</a>\n"   )
+    else &
+        save_str = str
+    
+    save(out_file, save_str)
+}
+
+
+DoOrAddToMemTime :: {
+    
+    result :: args_alias :: *
+    
+    
+    code
+    
+    if not comps  then (
+        args()
+        return      )
+    
+    args_alias = @args
+    result = @Comps(; args_alias())
+    if params.c == params.c_min  then memory = that + result[1]
+    time = that + result[2]
+    
+    if memory > max_memory  then &
+        ErrorScreen("Error:  this calculation would require more memory than allowed for the web calculator.")
+    else if time > max_time  then &
+        ErrorScreen("Error:  this calculation would take longer than allowed on the web calculator.")
+}
+
+
+
+| Main script
+
+
+EF2 :: EF
+pid_file :: params_file :: out_file :: input_string :: lr_path :: lr_path2 :: string
+ProcessID :: int
+UserScript :: *
+
+print_string(pid_file, PathName, "pid")
+read_string(pidstr := load(pid_file), ProcessID)
+
+print_string(params_file, PathName, "runs/params_", ProcessID)
+print_string(out_file, PathName, "runs/output_", ProcessID, ".html")
+
+input_string := load(params_file)
+
+
+| HTML_print("Content-type: text/html\n\n")   | done in Perl
+
+HTML_print("<P> ")
+
+
+|call("ServerInput", input_string)
+
+input_size := size(input_string)
+input_chars[input_size] :: char
+input_chars =! input_string
+
+
+    | decode the CGI into Cicada-script format
+
+for c1 in <1, input_size>  (
+    if input_chars[c1] == 43  then input_chars[c1] = 32             | '+' --> space
+    else if input_chars[c1] == 38  then input_chars[c1] = 44        | '&' --> ','
+    else if input_chars[c1] == 37  then (                           | '%' (escape character in HTML)
+        if c1+2 > input_size  then ErrorScreen("Error in form")
+        input_chars[c1] = 16*ReadHex(input_chars[c1+1])+ReadHex(input_chars[c1+2])
+        remove input_chars[<c1+1, c1+2>]
+        input_size = that-2
+)   )
+
+
+    | and 'sanitize'
+
+for c1 in <1, input_size>  (
+if input_chars[c1] < 32 or (input_chars[c1] > 32 and input_chars[c1] < 40) or (input_chars[c1] > 57 and input_chars[c1] < 61) &
+             or (input_chars[c1] > 61 and input_chars[c1] < 65) &
+            or (input_chars[c1] > 90 and input_chars[c1] < 95) or input_chars[c1] == 96 or input_chars[c1] > 122  then (
+    remove input_chars[c1]
+    input_size = that-1
+    c1 = that-1
+))
+
+input_string =! input_chars
+print_string(input_string, "code,", input_string)
+
+
+    | now read the fields into our params list
+
+if compile(input_string, AllNames) /= passed  then (
+    ErrorScreen("There was an error reading some of the required fields.  All fields must be numeric.")
+    return      )
+else  (
+    if trap(transform(R_string, UserScript)) /= passed  then &
+        ErrorScreen("An error reading some of the required fields?  This error should not have appeared -- a transform() error occurred.")
+    
+    if trap(
+        (params<<UserScript)()
+    ) /= passed  then (
+        ErrorScreen("There was an error reading some of the required fields.  All fields must be numeric.")
+)   )
+
+if params.c_step <= 0  then &
+    ErrorScreen("Error:  counter step must be greater than or equal to zero.")
+
+if (params.c_max - params.c_min) / params.c_step + 1 > max_counter  then &
+    ErrorScreen("Error:  a maximum of ", max_counter, " counter iterations is allowed.")
+
+
+    | read in the constant parameters (not affected by the counter) that Yazoo will be working with
+
+if params.disp == params.vec  then sum_R = 0
+else if params.disp == params.dist  then sum_R = 1
+else if params.disp == params.sum  then sum_R = 2
+
+avg_tangent = false
+if params.u0 == params.vec and params.uf == params.vec  then sum_tangent = false
+else  (
+    sum_tangent = true
+    if params.uf == params.vec  then avg_tangent = true     )
+
+if params.twist_menu == params.angle  then sum_twist = false
+else if params.twist_menu == params.vec  then sum_twist = false
+else if params.twist_menu == params.sum  then sum_twist = true
+
+
+
+    | Begin counter loop
+
+comps = true
+memory := time := 0.
+
+for c_2 in <1, 2>  (
+    
+    params.c = params.c_min
+    while params.c <= params.c_max  do (
+        
+        HTML_print("<TR>")
+        if counter_header_text /= ""  then HTML_print("<TH>", params.c)
+        
+        
+        
+            | get the adjustable param values for this loop
+        
+        if trap(
+            (params<<UserScript)()
+        ) /= passed  then &
+            ErrorScreen("There was an error reading some of the required fields.  All fields must be numeric.")
+        
+        persistence_length := in_nm(params.persistence_length, params.persistence_length_units)    | has to go first in case other params are in units of lp
+        twist_persistence_length := in_nm(params.twist_persistence_length, params.twist_persistence_length_units)
+        unstressed_twist := in_nm(params.unstressed_twist, params.unstressed_twist_units; rev = true)
+        contour_length := in_nm(params.contour_length, params.contour_length_units)
+        return_units = in_nm(1, params.return_units)        | has to be done within the loop in case units are of lp (which can change)
+        if sum_R == 2  then return_units = 1
+        else if sum_R == 1  then return_units = that
+        else if sum_R == 0  then return_units = that^3
+        
+        disp[1] = in_nm(params.X_or_R, params.disp_units)
+        if sum_R == 0  then (
+            disp[2] = in_nm(params.Y, params.disp_units)
+            disp[3] = in_nm(params.Z, params.disp_units)        )
+        else  &
+            disp[2] = disp[3] = 0
+        
+        sampling_radius := in_nm(params.sampling_radius, params.disp_units)
+        
+        if Dot(u0, u0) == 0  then u0[3] = 1          | we need to do this even if we're summing (oversight in C code)
+        if Dot(uf, uf) == 0  then uf[3] = 1
+
+        if avg_tangent  then (
+            u0 = uf             | because when we sum over tangents we do so over the final tangent
+            return_units = that / (4*pi)        )
+        
+        
+        
+            | if necessary, set up the eigenfunction & Monte Carlo calculations
+        
+        if params.c == params.c_min or params.loop_init  then (
+            if params.eigenfunction  then (
+                if params.ef_mode /= params.saved  then (
+                    DoOrAddToMemTime(; EF.Init(params.l_max, params.K_step, params.K_max))
+                    DoOrAddToMemTime(; EF2.Init(max(0, params.l_max-1), params.K_step*1.2, params.K_max*.8))    )
+                else  (
+                    if comps  then (
+                        DoOrAddToMemTime(; EF.Init(14, 2, 2000), gbl_time = 0)
+                        DoOrAddToMemTime(; EF2.Init(13, 2*1.2, 2000*.8), gbl_time = 0)      )
+                    else  (
+                        print_string(lr_path, PathName, "roots_14_2_2000")
+                        print_string(lr_path2, PathName, "roots_13_2o4_1600")
+                        EF.LoadRoots(lr_path)
+                        EF2.LoadRoots(lr_path2)
+            )   )   )
+            
+            if params.monte_carlo  then (
+                DoOrAddToMemTime(; MC.InitWormlike( code
+                    persistence_length = root.persistence_length
+                    twist_persistence_length = root.twist_persistence_length
+                    unstressed_twist = root.unstressed_twist
+                    segment_length = root.persistence_length / params.segments_per_lp
+                    dist_evals = params.dist_evals    ))
+                DoOrAddToMemTime(; MC.P(contour_length*params.segments_per_lp/root.persistence_length, params.samples_num ; u0 = root.u0  ))
+        )   )
+        
+        
+            | finally, make the measurements
+
+        if params.gaussian  then &
+            HTML_print("<TD>", Gauss(contour_length, Dot(disp, disp)^.5;
+                        persistence_length = root.persistence_length, sum_R = root.sum_R,
+                        sum_tangent = root.sum_tangent, sum_twist = root.sum_twist)*return_units)
+        
+        if params.eigenfunction  then (
+            DoOrAddToMemTime(; trap(ef_answer = @EF.P(contour_length; R = disp, u0 = root.u0, uf = root.uf, SetTwist(params.relative_twist),
+                            sum_R = root.sum_R, sum_tangent = root.sum_tangent, sum_twist = root.sum_twist,
+                            persistence_length = root.persistence_length, twist_persistence_length = root.twist_persistence_length,
+                            unstressed_twist = root.unstressed_twist, theta_step_num = params.theta_step_num, phi_step_num = params.phi_step_num  )))
+            DoOrAddToMemTime(; trap(ef_ans2 = @EF2.P(contour_length; R = disp, u0 = root.u0, uf = root.uf, SetTwist(params.relative_twist),
+                            sum_R = root.sum_R, sum_tangent = root.sum_tangent, sum_twist = root.sum_twist,
+                            persistence_length = root.persistence_length, twist_persistence_length = root.twist_persistence_length,
+                            unstressed_twist = root.unstressed_twist, theta_step_num = params.theta_step_num*.8, phi_step_num = params.phi_step_num*.8  )))
+            if not comps   then (
+                HTML_print("<TD>", ef_answer*return_units, "<TD>", ef_ans2*return_units)
+        )   )
+        
+        if params.monte_carlo  then (
+            
+            DoOrAddToMemTime(; trap(mc_answer = @MC.P(code, at(r, disp), at(u, uf), SetTwist(params.relative_twist),
+                        dr = sampling_radius, dangle = params.dangle,
+                        sum_R = root.sum_R, sum_tangent = root.sum_tangent, sum_twist = root.sum_twist,
+                        if root.avg_tangent  then sum_tangent = true		)))
+            
+            if not comps  then (
+                HTML_print("<TD>", mc_answer[1]*return_units, "<TD>", mc_answer[2]*return_units)
+        )   )
+        
+        params.c = that + params.c_step
+    )
+    
+    if not comps  then (
+        HTML_print("</TABLE>", code, flush = true)
+        exit        )
+    
+    comps = false
+    
+    HTML_print("<TITLE> Result </TITLE>\0D\n")
+    
+    if sum_tangent  then (
+        if not sum_twist  then &
+            HTML_print("<P>Note: twists will be summed over because tangents are being summed/averaged<a href=\"help_geometry.html\">?</a>.")
+        sum_twist = true        )
+    
+    
+        | print the header
+    
+    if not params.gaussian and not params.eigenfunction and not params.monte_carlo  then (
+        HTML_print("<P> Nothing to display.  You must select one or more calculations to perform (next to the Calculate button).\n")
+        return      )
+
+    HTML_print("<P><strong>Results</strong>: probability ")
+    if sum_R == 2 and sum_tangent and not avg_tangent  then &
+        HTML_print("of anything happening")
+    else  (
+        HTML_print("density for a polymer")
+        if not sum_tangent  then (
+            HTML_print(", with the given initial tangent")
+            if not sum_twist  then HTML_print(" and twist")
+            HTML_print(",")     )
+        else if avg_tangent  then &
+            HTML_print(", averaged over all initial tangents,")
+        
+        HTML_print(" to have")
+        if sum_R == 0  then &
+            HTML_print(" the given relative displacement between its ends")
+        else if sum_R == 1  then &
+            HTML_print(" the given distance between its ends")
+        
+        if not sum_tangent or avg_tangent  then (
+            if sum_R == 2  then HTML_print(" ")
+            else  HTML_print(" and ")
+            HTML_print("the given final tangent")
+            if not sum_twist  then HTML_print(" and relative twist")
+    )   )
+    HTML_print(".<BR><BR>\n")
+    
+    HTML_print("<P><strong>Units</strong>: ")
+    if sum_R == 2 and sum_tangent  then HTML_print("1")
+    else  (
+        HTML_print("probability")
+        if sum_R /= 2  then (
+            HTML_print(" per ", disp_unit_text[params.return_units])
+            if sum_R == 0  then HTML_print("<sup>3</sup>")      )
+        if not sum_tangent or avg_tangent  then (
+            if sum_R /= 2  then HTML_print(",")
+            HTML_print(" per tangent solid angle (rad<sup>2</sup>)")        )
+        if not sum_twist  then (
+            HTML_print(", per twist angle (rad)")
+    )   )
+    HTML_print(".<BR><BR><BR><small>Note: results may take a while to calculate.</small>\n")
+    
+    counter_header_text = gauss_header_text = ef_header_text = mc_header_text = header_text = ""
+    thin_columns_num = thick_columns_num = 0
+    
+    if params.c_min < params.c_max  then (
+        counter_header_text = "<TH>c"
+        thin_columns_num = that+1       )
+    if params.gaussian  then (
+        gauss_header_text = "<TH>Gaussian"
+        thin_columns_num = that+1       )
+    if params.eigenfunction  then (
+        ef_header_text = "<TH>Eigenfunction<TH>EF compare"
+        thin_columns_num = that + 2     )
+    if params.monte_carlo  then (
+        mc_header_text = "<TH>Monte Carlo<TH>MC error"
+        thin_columns_num = that + 2     )
+    
+    HTML_print("<TABLE border=1> ")
+    if thin_columns_num /= 0  then &
+        HTML_print("<COLGROUP span=\"", thin_columns_num, "\" width=\"170\">")
+    if thick_columns_num /= 0  then &
+        HTML_print("<COLGROUP span=\"", thick_columns_num, "\" width=\"350\">")
+    HTML_print(counter_header_text, gauss_header_text, ef_header_text, mc_header_text)
+)

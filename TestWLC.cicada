@@ -1,0 +1,1967 @@
+| ******  Supporting Routines  ******
+
+
+| args = { v1, v2, v3 }.  Returns the angle between (the perp components of) v1 and v2 along the right-hand direction of v3.
+| Return value is from 0 to 2*pi.
+
+angleBetween :: {
+    
+    ans :: double
+    v1 :: v2 :: vPerp :: [3] double
+    
+    
+    code
+    
+    { v1, v2, vPerp } = args
+    GramSchmidt(v1, vPerp)
+    GramSchmidt(v2, vPerp)
+    
+    ans = acos(min(max(dot(v1, v2)/(sqNorm(v1)*sqNorm(v2))^.5, -1), 1))
+    if dot(vPerp, cross(v1, v2)) < 0  then ans = 2*pi - ans
+    
+    return new(ans)
+}
+
+
+
+
+| ******  Testing Routines  ******
+
+checkDists :: {
+    
+    MCs :: { untwisted :: twisted :: both :: MC }
+    
+    ShiftDist :: SlideDist :: RiseDist :: [] { distance :: number :: predicted :: double }
+    BendDist :: AzimuthDist :: TwistDist :: [] { angle :: number :: predicted :: double }
+    c1 :: c2 :: int
+    u0 :: n0 :: b0 :: { double, double, double }
+    mid_u :: mid_n :: mid_b :: [3] double
+    tot_pred :: twist_angle :: integral :: cI :: dist_step :: double
+    distName :: string
+    
+    params :: {
+        numRuns := 100                      | number of samples (for both MCs)
+        numBins := 10                       | determines bin sizes
+        persistence_length := 1             | persistence length
+        twist_persistence_length := 2       | twist persistence length
+        unstressed_twist := 4               | natural twist
+        segment_length := 1                 | segment length
+    }
+    
+    Dists :: { ShiftDist, SlideDist, RiseDist, BendDist, AzimuthDist, TwistDist }
+    DistNames :: { "Shift", "Slide", "Rise", "Bend", "Azimuth", "Twist" }
+    DR :: *
+    
+    bin :: {
+        
+        the_bin :: int
+        
+        code
+        
+        if DR[args[2]][3] == 1  then return 1
+        
+        the_bin = floor(params.numBins * (args[1]-DR[args[2]][1][1])/(DR[args[2]][2][1]-DR[args[2]][1][1])) + 1
+        
+        return the_bin      }
+    
+    
+    GetMidVector :: {       | a heuristic to the 'middle' orientation vector
+    
+        norm :: double
+        
+        code
+        
+        args[3][1] = (args[1][1]+args[2][1])/2
+        args[3][2] = (args[1][2]+args[2][2])/2
+        args[3][3] = (args[1][3]+args[2][3])/2
+        
+        norm = dot(args[3], args[3])^.5
+        
+        args[3][1] = that / norm
+        args[3][2] = that / norm
+        args[3][3] = that / norm
+    }
+    
+    
+    code
+    
+    if trap( (params<<args)() ) /= passed  then (
+        printl("usage:  checkDists(code, params from { numRuns, numBins, persistence_length, twist_persistence_length, ",
+                    "unstressed_twist, segment_length } = values)")
+        return      )
+    
+    
+        | Generate random initial conditions
+    
+    u0 = { random(), random(), random() }
+    n0 = { random(), random(), random() }
+    GramSchmidt(n0, u0)
+    V3Mult(u0, sqNorm(u0)^-.5)
+    V3Mult(n0, sqNorm(n0)^-.5)
+    b0 = cross(u0, n0)
+
+
+        | Generate the random 2-segment chains
+    
+    printl("Running samples..")
+    
+    for c1 in <1, 3>  (
+|**|
+        MCs[c1].initWormlike(
+        
+            code
+            
+            segment_length = params.segment_length
+            persistence_length = params.persistence_length
+            unstressed_twist = params.unstressed_twist
+            if c1 == 1  then (
+                persistence_length = params.persistence_length
+                twist_persistence_length = 1e10     )
+            else if c1 == 2  then (
+                persistence_length = 1e10
+                twist_persistence_length = params.twist_persistence_length      )
+            else  (
+                persistence_length = params.persistence_length
+                twist_persistence_length = params.twist_persistence_length      )
+            
+            dist_evals = 401               )           |**|
+        
+|*        MCs[c1].init(
+            
+            code
+            
+            { shift, rise; return (2*shift)^2 + (rise-params.segment_length)^2; return 1  }
+            { slide; return e^-abs(slide); return 1  }
+            { bend, twist, azimuth;
+                return params.segment_length * ( params.persistence_length*(bend/params.segment_length)^2/2  &
+                      + params.twist_persistence_length*(twist/params.segment_length-params.unstressed_twist)^2/2 );
+                return abs(sin(bend))     }
+            
+            code
+            
+            distRange[shift].min = distRange[slide].min = -1, distRange[shift].max = distRange[slide].max = 1
+            distRange[rise].min = 0, distRange[rise].max = 2
+            distRange[twist].min = params.unstressed_twist-pi, distRange[twist].max = params.unstressed_twist+pi
+            distRange[bend].samples = distRange[twist].samples = 80
+            default_vol_el = false
+        )       *|
+        
+        MCs[c1].density(params.numRuns, 1; u0 = checkDists.u0, n0 = checkDists.n0)
+    )
+    
+    DR = @MCs.both.distRange
+    
+    
+        | Initialize the distribution bins
+    
+    for c1 in <1, 6>  (
+        Dists[c1][^params.numBins]
+        for c2 in <1, params.numBins>  (
+            Dists[c1][c2][1] = (c2-.5)*(DR[c1][2][1]-DR[c1][1][1])/params.numBins + DR[c1][1][1]
+            Dists[c1][c2].number = 0
+    )   )
+    
+    
+        | Calculate the theoretical distributions
+    
+    for c1 in <1, params.numBins>  (
+|*
+        ShiftDist[c1].predicted = SlideDist[c1].predicted = RiseDist[c1].predicted = 0
+        if ShiftDist[c1].distance <= 0 and ShiftDist[c1].distance + (DR[1][2][1]-DR[1][1][1])/params.numBins > 0  then &
+            ShiftDist[c1].predicted = 1
+        if SlideDist[c1].distance <= 0 and SlideDist[c1].distance + (DR[2][2][1]-DR[2][1][1])/params.numBins > 0  then &
+            SlideDist[c1].predicted = 1
+        if RiseDist[c1].distance <= params.segment_length and RiseDist[c1].distance + (DR[3][2][1]-DR[3][1][1])/params.numBins > params.segment_length  then &
+            RiseDist[c1].predicted = 1        *|
+        
+|**|
+        ShiftDist[c1].predicted = e^-((2*ShiftDist[c1].distance)^2)
+        SlideDist[c1].predicted = e^-(e^-abs(SlideDist[c1].distance))
+        RiseDist[c1].predicted = e^-((RiseDist[c1].distance-params.segment_length)^2)       |**|
+
+        BendDist[c1].predicted = abs(sin(BendDist[c1].angle)) * e^(-params.persistence_length*BendDist[c1].angle^2/(2*params.segment_length))
+        AzimuthDist[c1].predicted = 1
+        twist_angle = TwistDist[c1].angle - params.unstressed_twist
+        TwistDist[c1].predicted = e^(-params.twist_persistence_length*twist_angle^2/2/params.segment_length)
+    )
+
+
+        | Compute the empirical distributions
+    
+    printl("Computing distributions..")         | takes a while (<~ 1 hrs for 1e5 runs)
+    
+    for c1 in <1, params.numRuns>  (
+    for c2 in <1, 6>  (
+        Dists[c2][bin(MCs.both.Trajectory[c1][c2], c2)].number = that + 1
+    ))
+
+        | Normalize all distributions and save them
+    
+    for c1 in <1, 6>  (
+        tot_pred = 0
+        for c2 in <1, params.numBins> &
+            tot_pred = that + Dists[c1][c2].predicted
+        for c2 in <1, params.numBins>  (
+            Dists[c1][c2].predicted = that / tot_pred / (DR[c1][2][1]-DR[c1][1][1]) * params.numBins
+            Dists[c1][c2].number = that / params.numRuns / (DR[c1][2][1]-DR[c1][1][1]) * params.numBins
+    )   )
+
+    printl("Saving distributions..")
+    
+    for c1 in <1, 6>  (
+        print_string(distName, "Test/MC_PDF_check/", DistNames[c1], "Dist.txt")
+        saveTable(distName, Dists[c1])      )
+}
+
+
+
+|* A successful run of testOneLink:
+> testOneLink(0,0,1,pi/2*cos(pi/4), pi/2*sin(pi/4), 0)
+
+r:  { { 0, 0, 0 }, { 0.5, -0.5, 0.707107 }, { 1, -1, 0 } }
+u:  { { 0, 0, 1 }, { 0.707107, -0.707107, 6.12323e-17 } }
+n:  { { 1, 0, 0 }, { 0.5, 0.5, -0.707107 } }
+*|
+
+testOneLink :: {
+
+    testM :: MC
+    traj :: [6] double
+    inited := false
+    
+    params :: {
+        seg_length := .1            | segment length
+        u0 :: { 0, 0, 1 }
+        n0 :: { 1, 0, 0 }        }
+    
+    
+    code
+    
+    if trap(
+        traj = args
+        (params<<args)()
+    ) /= passed  then (
+        printl("usage: testOneLink(twist angle, bend_direction (radians from n), bend angle, code, params from { seg_length, u0, n0 } = values)")
+        return      )
+    
+    if not inited  then (
+        testM.initWormlike(code, segment_length = params.seg_length, dist_evals = 100)
+        inited = true   )
+    
+    testM.propagate( 2; return traj; { u0, n0 } = { params.u0, params.n0 } )
+    
+    print("r:  "), sprint(testM.segments[*].r)
+    print("u:  "), sprint(testM.segments[<1, 2>].u)
+    print("n:  "), sprint(testM.segments[<1, 2>].n)
+    
+}
+
+
+calibrateBPSteps :: {
+    
+    sumNorm :: {
+        
+        c1 :: int
+        norm :: double
+        ans :: [3] double
+        
+        code
+        
+        ans[1] = args[1][1] + args[2][1]
+        ans[2] = args[1][2] + args[2][2]
+        ans[3] = args[1][3] + args[2][3]
+        
+        norm = sqNorm(ans)^.5
+        for c1 in <1, 3>  ans[c1] = that/norm
+        
+        return new(ans)             }
+    
+    
+    v3Diff :: {
+        
+        c1 :: int
+        diff_proj :: double
+        
+        code
+        
+        diff_proj = 0
+        for c1 in <1, 3>  diff_proj = that + (args[1][c1] - args[2][c1])*args[3][c1]
+        
+        return new(diff_proj)
+    }
+    
+    
+    m :: MC
+    
+    T1name :: T2name :: string
+    
+    dist_pts := 101
+    joints := dist_pts^3
+    min_did := 1
+    max_did := 17
+    
+    compdist_step_params :: [joints] { shift :: slide :: rise :: bend :: azimuth :: twist :: double, |*a::b::c::d::e::double*| }
+    xbar :: ybar :: zbar :: y1proj :: y2proj :: [3] double
+    bends :: azimuths :: twists :: bend_table :: azimuth_table :: twist_table :: [] double
+    d1 :: d2 :: d3 :: y1dy2 :: y1norm :: y2norm :: bend_step :: bidfrac :: angle :: double
+    dids :: [] int
+    c1 :: c2 :: c3 :: cdid :: ci :: bidx1 :: bidx2 :: int
+    
+    
+    code
+    
+    printl("Initializing distributions...")
+    m.initBP(code, pdf_samples = dist_pts, invert_CDFs = true)
+    
+    dids[^joints]
+    bends[^joints]
+    azimuths[^joints]
+    twists[^joints]
+    
+    for cdid in <min_did, max_did>  (
+        
+        printl("Writing trajectory...")
+        bend_table[*] =! m.CDF_tables.bend(cdid)[2]
+        azimuth_table[*] =! m.CDF_tables.azimuth(cdid)[2]
+        twist_table[*] =! m.CDF_tables.twist(cdid)[2]
+        bend_step = m.CDF_tables.azimuth(cdid)[1][1].stepVal
+        
+        ci = 1
+        for c1 in <1, dist_pts>  (
+            d1 = bend_table[c1]
+            bidx1 = floor(d1/bend_step)
+            bidx2 = ceil(d1/bend_step)
+            
+            if bidx2 >= dist_pts  then bidx2 = dist_pts-1
+            bidfrac = d1/bend_step - bidx1
+            for c2 in <1, dist_pts>  (
+                d2 = (1 - bidfrac) * azimuth_table[bidx1*dist_pts + c2] + bidfrac * azimuth_table[bidx2*dist_pts + c2]
+                for c3 in <1, dist_pts>  (
+                    d3 = twist_table[c3]
+                    
+                    bends[ci] = d1
+                    azimuths[ci] = d2
+                    twists[ci] = d3
+                    
+                    dids[ci] = cdid
+                    
+                    ci = that + 1
+        )   )   )
+        
+        printl("Generating chains...")
+        m.propagate( joints; return { 0, 0, 0, bends[segment], azimuths[segment], twists[segment] } )
+        
+        printl("Measuring joint angles...")
+        for c1 in <1, joints>  (
+            if c1 mod 1000 == 0  then (  print("-"), springCleaning()  )
+            
+            ybar = sumNorm(m.Segments[c1].b, m.Segments[c1+1].b)
+            zbar = sumNorm(m.Segments[c1].u, m.Segments[c1+1].u)
+            xbar = cross(ybar, zbar)
+            
+            y1proj = m.Segments[c1].b, y2proj = m.Segments[c1+1].b
+            GramSchmidt(y1proj, zbar), GramSchmidt(y2proj, zbar)
+            y1norm = sqNorm(y1proj)^.5
+            y2norm = sqNorm(y2proj)^.5
+            y1dy2 = dot(y1proj, y2proj)
+            
+            if y1dy2 > 1  then y1dy2 = 1
+            else if y1dy2 < -1  then y1dy2 = -1
+            if y1norm == 0 or y2norm == 0  then angle = 0
+            else  angle = acos(y1dy2/y1norm/y2norm)
+            if dot(cross(y1proj, y2proj), zbar) < 0  then angle = -that
+            
+            compdist_step_params[c1] = {  m.Trajectory[c1].shift, m.Trajectory[c1].slide, m.Trajectory[c1].rise,
+                            2*asin(-.5*v3Diff(m.Segments[c1+1].u, m.Segments[c1].u, ybar)) * 180/pi,
+                            2*asin(.5*v3Diff(m.Segments[c1+1].u, m.Segments[c1].u, xbar)) * 180/pi, angle * 180/pi  }
+        )
+        
+        printl("Saving tables...")
+        print_string(T1name, "../../Test/calibrateBPSteps/CBPS_steps_", cdid)
+        saveTable(T1name, compdist_step_params)
+    )
+}
+
+
+generateMCs :: {
+
+    params :: {
+        num_segments := 50
+        samples_num := 10
+        dist_evals := 1000
+        seg_length := .1                | segment length
+        u0 :: { .5, -.6, .3 }
+        n0 :: { 0, .8, .6 }
+        
+        save_files := false        }
+
+    testM :: MC
+    
+    to_display :: [0][3] double
+    P_1 :: [] double
+    file_name :: string
+    c1 :: c2 :: int
+    
+    
+    code
+    
+    if trap(
+        if top(args) /= 0  then throw(2)
+        (params<<args)()
+    ) /= passed  then (
+        printl("usage:  generateMCs(code, params from { num_segments, samples_num, seg_length, dist_evals, u0, n0, save_files } = values")
+        return      )
+    
+    if testM.done_init == false  then &
+        testM.initWormlike(code, segment_length = params.seg_length, dist_evals = params.dist_evals, sigmas = 7)
+    else if params.seg_length /= testM.initWormlike.params.segment_length  then &
+        testM.initWormlike(code, segment_length = params.seg_length, dist_evals = params.dist_evals, sigmas = 7)
+    
+    testM.density(
+        
+        if params.save_files  then (
+            tmp_NOS :: [params.num_segments+1] int
+            for c1 in <0, params.num_segments>  (
+                tmp_NOS[c1+1] = c1
+        )   )
+        else  params.num_segments
+        
+        params.samples_num
+
+        code
+        
+        { u0, n0 } = { params.u0, params.n0 }
+    )
+    
+    if params.save_files  then (
+    
+        print("R dot u0:  "), sprint(testM.R_dot_u0(1))
+
+        to_display[^params.num_segments+1]
+        printl()
+    
+        for c1 in <1, params.samples_num>  (
+            for c2 in <1, params.num_segments>  &
+                to_display[c2] =! testM.sampled_rs[c1][c2]
+            
+            print_string(file_name, "Test/VisualMCs/chain_", c1)
+            saveTable(file_name, to_display)
+    )   )
+    
+    else  (
+    
+        P_1[^params.samples_num]                                    | otherwise we get a biased sampling
+        for c1 in <1, params.samples_num>  P_1[c1] = 1
+        testM.P_weights =! P_1
+        
+        return testM.R_dot_u0(1)        )
+}
+
+
+
+| Tests the computation of the gradient in the harmonic approximation
+
+testHAGrad :: {
+    
+    code
+    
+    MC.initWormlike(; segment_length = 0.1, unstressed_twist = 0)
+    MC.propagate(5; return { 0, 0, .1, pi/5, 0, 0 })
+    MC.density(5, 0; at(u, { 0, 0, -1 }), at(r, { 1/pi, 0, 0 }), perturbative = true, minE_method = 4, fixed_bend = fixed_azimuth = true)
+}
+
+
+
+| Tabulates R dot u0 for a range of Ls and temperatures; the results for each temp are saved to a separate file
+
+makeRuTable :: {
+    Ls :: {  500, 1500, 5000  }        | in units of seg_length
+    cT :: cL :: int
+    one_measurement :: {  result :: error :: double  }
+    segment_length := 0.001
+    
+    output :: [top(Ls)] {  L :: predicted :: measured :: error :: double  }
+    
+    
+    code
+    
+    for cL in <1, top(Ls)>  (
+        one_measurement = generateMCs(code, num_segments = Ls[cL], samples_num = 4e4, seg_length = segment_length, copy(u0, "from", { -.3, .6, .5 }),
+                                                            copy(n0, "from", { .9, -.4, -.6 }), save_files = false)
+        output[cL] = {  Ls[cL]*segment_length, (1 - e^(-Ls[cL]*segment_length)), one_measurement.result, one_measurement.error  }
+        sprint(output[cL])      )
+    
+    saveTable("Test/R_dot_u0/RuTable", output)
+}
+
+
+
+
+
+| Outputs all the Wigner functions Dlmj(theta = 0.4), except for the complex exponential in phi and psi, up to l = 5.
+| The output from can be used to generate Mathematica calculations for comparison, whose output we then paste back into Yazoo and
+| export to MATLAB using saveTable().
+
+testWigner :: {
+    
+    l :: m :: j :: counter :: int
+    r :: i :: double
+    saved_vals :: [0][5] double
+    
+    
+    code
+    
+    counter = 1
+    for l in <0, 5>  (
+    for m in <-l, l>  (
+    for j in <-l, l>  (
+        { r, i } = Wigner(l, m, j, .4, 0, 0)
+        sprint(l, m, j, {r, i})
+        
+        saved_vals[^counter]
+        saved_vals[counter] = { l, m, j, r, i }
+        counter = that+1
+    )))
+    printl()
+    
+    sprint(saved_vals)
+    
+    
+    | now define the cmp2 variable using Mathematica's output
+    | requires some massaging:  remove all \(, \), `, and change `^* to e
+    | helps to copy and paste into a new entry field in Mathematica, then copy from that
+    | must re-run testWigner()
+    
+    cmp2 :: { 0.11254, 0.187231, 0.0536744, 0.00769356, -0.0536744, 0.179537, 0.0536744, 0.00769356, -0.0536744, 0.187231, 0.232173, 
+                0.0941278, 0.0233689, 0.00386784, 0.000392025, -0.0941278, 0.203552, 0.110545, 0.0282289, 0.00386784, 0.0233689, -0.110545, 
+                0.194404, 0.110545, 0.0233689, -0.00386784, 0.0282289, -0.110545, 0.203552, 0.0941278, 0.000392025, -0.00386784, 0.0233689, 
+                -0.0941278, 0.232173, 0.263869, 0.13102, 0.0419937, 0.00982943, 0.00172558, 0.000221228, 0.0000183079, -0.13102, 0.209655, 0.155246, 
+                0.0569477, 0.0136153, 0.0022094, 0.000221228, 0.0419937, -0.155246, 0.1798, 0.162762, 0.0615103, 0.0136153, 0.00172558, -0.00982943, 
+                0.0569477, -0.162762, 0.170276, 0.162762, 0.0569477, 0.00982943, 0.00172558, -0.0136153, 0.0615103, -0.162762, 0.1798, 0.155246, 
+                0.0419937, -0.000221228, 0.0022094, -0.0136153, 0.0569477, -0.155246, 0.209655, 0.13102, 0.0000183079, -0.000221228, 0.00172558, 
+                -0.00982943, 0.0419937, -0.13102, 0.263869, 0.28739, 0.164775, 0.0624886, 0.0179139, 0.00405995, 0.000736108, 0.000105512, 0.0000114325, 
+                8.19357e-7, -0.164775, 0.204725, 0.191106, 0.0873135, 0.0271605, 0.00626108, 0.00108904, 0.00013876, 0.0000114325, 0.0624886, -0.191106, 
+                0.152958, 0.197772, 0.0999452, 0.0317846, 0.0070404, 0.00108904, 0.000105512, -0.0179139, 0.0873135, -0.197772, 0.124609, 0.19892, 
+                0.103833, 0.0317846, 0.00626108, 0.000736108, 0.00405995, -0.0271605, 0.0999452, -0.19892, 0.115593, 0.19892, 0.0999452, 0.0271605, 
+                0.00405995, -0.000736108, 0.00626108, -0.0317846, 0.103833, -0.19892, 0.124609, 0.197772, 0.0873135, 0.0179139, 0.000105512, -0.00108904, 
+                0.0070404, -0.0317846, 0.0999452, -0.197772, 0.152958, 0.191106, 0.0624886, -0.0000114325, 0.00013876, -0.00108904, 0.00626108, 
+                -0.0271605, 0.0873135, -0.191106, 0.204725, 0.164775, 8.19357e-7, -0.0000114325, 0.000105512, -0.000736108, 0.00405995, -0.0179139, 
+                0.0624886, -0.164775, 0.28739, 0.305181, 0.195629, 0.0841229, 0.0278467, 0.00746737, 0.00165819, 0.000306845, 0.0000470191, 
+                5.83668e-6, 5.57743e-7, 3.57528e-8, -0.195629, 0.192318, 0.219323, 0.117827, 0.0437244, 0.0124024, 0.00279339, 0.000504407, 
+                0.0000720934, 7.79497e-6, 5.57743e-7, 0.0841229, -0.219323, 0.118964, 0.219475, 0.136511, 0.0540776, 0.015611, 0.00343577, 0.000578994, 
+                0.0000720934, 5.83668e-6, -0.0278467, 0.117827, -0.219475, 0.0735573, 0.214466, 0.145911, 0.0591687, 0.0167197, 0.00343577, 0.000504407, 
+                0.0000470191, 0.00746737, -0.0437244, 0.136511, -0.214466, 0.0489097, 0.210814, 0.148765, 0.0591687, 0.015611, 0.00279339, 0.000306845, 
+                -0.00165819, 0.0124024, -0.0540776, 0.145911, -0.210814, 0.0411075, 0.210814, 0.145911, 0.0540776, 0.0124024, 0.00165819, 0.000306845, 
+                -0.00279339, 0.015611, -0.0591687, 0.148765, -0.210814, 0.0489097, 0.214466, 0.136511, 0.0437244, 0.00746737, -0.0000470191, 0.000504407, 
+                -0.00343577, 0.0167197, -0.0591687, 0.145911, -0.214466, 0.0735573, 0.219475, 0.117827, 0.0278467, 5.83668e-6, -0.0000720934, 0.000578994, 
+                -0.00343577, 0.015611, -0.0540776, 0.136511, -0.219475, 0.118964, 0.219323, 0.0841229, -5.57743e-7, 7.79497e-6, -0.0000720934, 0.000504407, 
+                -0.00279339, 0.0124024, -0.0437244, 0.117827, -0.219323, 0.192318, 0.195629, 3.57528e-8, -5.57743e-7, 5.83668e-6, -0.0000470191, 0.000306845, 
+                -0.00165819, 0.00746737, -0.0278467, 0.0841229, -0.195629, 0.305181 }
+
+    TW2 :: {
+        
+        code
+        
+        for counter in <1, top(cmp2)>  &
+            saved_vals[counter][5] = cmp2[counter]
+        
+        saveTable("Test/Wigner/Wigner_export", saved_vals)        }
+
+    | now use the max function of MATLAB to look for the largest discrepancy between the two sets of calculations
+    | i.e.  [val, index] = max(abs(Wigner_export(:,4)-Wigner_export(:,5)))
+}
+
+
+
+testSumR :: {
+    
+    AC :: EF
+    c1 :: int
+    u_0 :: n_0 :: u_f :: n_f :: { double, double, double }
+    
+    code
+    
+    if trap(
+        { u_0, n_0 } = EulerRot(.4, .6, -2)
+        { u_f, n_f } = EulerRot(-.3, -4, -1)
+    ) /= passed  then (
+        printl("Error:  must run TestEulerAngles.zoo before using testSumR()")
+        return      )
+    
+    for c1 in <0, 10>  (
+        AC.init(c1, 1, 0)
+        sprint(c1, AC.density(1, code, u0 = u_0, n0 = n_0, uf = u_f, nf = n_f, sum_R = 2))        )
+}
+
+
+
+testSpak :: {
+    
+    AC :: EF
+    
+    init :: {
+        
+        code
+        
+        if trap(
+            AC.init(args[1], args[2], args[3])
+        ) /= passed  then printl("usage:  testSpak.init(lmax, k_step, kmax)")
+    }
+    
+    run :: {
+        
+        L :: double
+        params :: *
+        
+        code
+        
+        params = @args
+        
+        if trap(
+            { L } = params
+        ) /= passed  then printl("usage:  testSpak.Run([args for CalcG()])")
+        
+        print(AC.density(L; (this<<params)()) * (2*AC.P.params.persistence_length)^3)
+    }
+}
+
+
+compareDist :: {
+    
+    c1 :: c2 :: c3 :: counter :: hits :: int
+    loop_el :: *
+    u_0 :: u_f :: n_0 :: n_f :: { double, double, double }
+    ifSpak := true
+
+    testW :: EF
+    testM :: MC
+    
+    
+        | *** adjustable parameters ***
+    
+    lp := 1
+    tlp := 2
+    nat_twist := 1.5
+    total_length := 100
+    
+    x_pts := 1, y_pts := 13, z_pts := 20
+    x_step := y_step := z_step := 0.25
+    x_center := 0, y_center := 0, z_center := 0
+
+	u_0 = { -.8, .6, 0 }
+	n_0 = { 0, 0, 1 }
+	u_f = { 0, -.8, .6 }
+	n_f = { -1, 0, 0 }
+    
+	lmax := 2
+	Kstep := .1
+	Kmax := 10
+    theta_steps := phi_steps := 100
+    
+	num_segments := 1000
+	num_samples := 0
+	d_angle := pi/2
+	sample_rad := .3
+    
+    sum_dist := 0
+    sum_tan := false
+    sum_tw := false
+            
+        | *** end adjustable parameters ***
+        
+        
+    alpha := 3/(4*lp*total_length)
+    
+    Gs :: [x_pts][y_pts][z_pts] { x :: y :: z :: Gauss :: Spak :: MC :: MC_err :: double }
+    export :: [x_pts*y_pts*z_pts][7] double
+    
+    init :: {
+        
+        (temp :: double) = 1
+        
+        code
+        
+        if trap(args[1]) == passed  then temp = args[1]
+        
+        if ifSpak  then testW.init(lmax, Kstep, Kmax)
+        
+        testM.initWormlike(code, persistence_length = lp, twist_persistence_length = tlp, unstressed_twist = nat_twist,
+                                    segment_length = total_length/num_segments)
+        testM.density(num_segments, num_samples; { u0, n0 } = { u_0, n_0 })
+    }
+    
+    run :: {
+    
+        c1 :: c2 :: c3 :: int
+        
+        code
+        
+        for c1 in <1, x_pts>  (
+        for c2 in <1, y_pts>  (
+            printl(c2)        | because it can take forever
+            for c3 in <1, z_pts>  (
+                
+                loop_el = @Gs[c1][c2][c3]
+                loop_el.x = (c1-(x_pts+1)/2)*x_step + x_center
+                loop_el.y = (c2-(y_pts+1)/2)*y_step + y_center
+                loop_el.z = (c3-(z_pts+1)/2)*z_step + z_center
+                loop_el.Gauss = (alpha/pi)^1.5*e^(-alpha*((loop_el.x-u_0[1]-u_f[1])^2 + (loop_el.y-u_0[2]-u_f[2])^2 + (loop_el.z-u_0[3]-u_f[3])^2))/(8*pi^2)
+                
+                if ifSpak  then &
+                    loop_el.Spak = testW.density(total_length; { twist_persistence_length, unstressed_twist } = { tlp, nat_twist },
+                            theta_step_num = theta_steps, phi_step_num = phi_steps,
+                            { R[1], R[2], R[3], u0, n0, uf, nf } = { loop_el.x, loop_el.y, loop_el.z, u_0, n_0, u_f, n_f },
+                            { sum_R, sum_tangent, sum_twist } = { sum_dist, sum_tan, sum_tw })
+                
+                if sum_dist /= 0  then &
+                    { loop_el.MC, loop_el.MC_err, hits } = testM.density(code, at(u, u_f), at(n, n_f), dangle = d_angle, dr = sample_rad )
+                else  &
+                    { loop_el.MC, loop_el.MC_err, hits } = testM.density(code, at(r, loop_el), at(u, u_f), at(n, n_f), dangle = d_angle, dr = sample_rad )
+                
+                if c2 == 1  then printl("- ", c3)
+        ))  )
+        
+        output()
+    }
+    
+    rerun :: {
+        
+        code
+        
+        for c1 in <1, x_pts>  (
+            printl(c1)
+            for c2 in <1, y_pts>  (
+                if c1 == 1  then printl("- ", c2)        | because it can take forever
+                for c3 in <1, z_pts>  (
+                    loop_el = @Gs[c1][c2][c3]
+                    { loop_el.MC, loop_el.MC_err, hits } = testM.density(code, at(r, loop_el), at(u, u_f), at(n, n_f), dangle = d_angle, dr = sample_rad )
+        )   )   )
+        
+        output()
+    }
+    
+    output :: {
+        
+        code
+        
+        if count_computations  then return
+
+        counter = 1
+        for c1 in <1, x_pts>  (
+        for c2 in <1, y_pts>  (
+        for c3 in <1, z_pts>  (
+            export[counter] =! Gs[c1][c2][c3]
+            counter = that+1
+        )))
+        
+        saveTable("Test/compare_dist/compare_dist", export)
+    }
+}
+
+
+makeCyclizationGraph :: {
+
+    t::EF
+    result :: [400] { l :: double, G :: double }
+    
+    code
+
+    t.init(16, 1, 2000)
+    
+    for c1 in <50, 400>  (
+        result[c1].l = c1/100
+        result[c1].G = t.density(result[c1].l; persistence_length = twist_persistence_length = 0.5, unstressed_twist = 5*pi)*8*pi^2
+        sprint(result[c1])      )
+
+    saveTable("Test/cyclization_plot/cyclization_graph", result)
+}
+
+
+makeDNACyclizationGraph :: {
+    
+    a :: b :: EF
+    m :: MC
+    result :: [1000] { l :: double, G :: G_compare :: M :: double }
+    nsegs := 40             | should be even
+    mean_twist :: double
+    
+    code
+    
+    a.init(14, 2, 2000)
+    b.init(13, 2.4, 1600)
+    
+    for c1 in <1, 1000>  (
+        result[c1].l = c1
+        result[c1].G = a.density(result[c1].l * 0.3/50) * 8*pi^2 / 50^3
+        result[c1].G_compare = b.density(result[c1].l * 0.3/50; theta_step_num = that*1.6, phi_step_num = that*1.6) * 8*pi^2 / 50^3
+        
+|*        m.initWormlike( ; segment_length = c1*0.3/50 / nsegs, BendRange[2] = max(that, 2*pi/nsegs+.01) )
+        mean_twist = ceil(98*c1*0.3/50 / (2*pi) - 0.5)/nsegs * (2*pi)
+        m.propagate(nsegs; return { 0, 0, c1*0.3/50 / nsegs, 2*pi/nsegs,
+                mean_twist*(segment-1+.5) - 2*pi*floor(mean_twist*(segment-1+.5)/(2*pi)+0.5), mean_twist })
+        result[c1].M = m.density(nsegs, 0; at(r, { c1*0.3/50/pi/(1-(2*pi/nsegs)^2/12)^.5, 0, 0 }; segment = nsegs/2), max_C = 1e-5,
+                    at(r, { 0, 0, 0 }), at(u, { 0, 0, {1} }), at(n, { {1}, 0, {0} }), perturbative = true, minE_method = 4)[2] * c1*0.3/50 * 8*pi^2 / 50^3*|
+        
+        sprint(result[c1])      )
+    
+    saveTable("Test/cyclization_plot/cyclization_graph_DNA", result)
+}
+
+
+makeLacLoopingGraph :: {
+    
+    result :: [] { angle :: double, G_wt :: G_wa :: G_lb :: double }
+    output :: [0][4] double
+    ci :: int
+    R_norm :: angle :: ap :: am :: double
+    f_str :: string
+    length := 401
+    
+    code
+    
+    EF.init(8, 2, 300)
+    printl("go")
+    
+    ci = 1
+    for angle in <30, 90>  (
+        R_norm = (10+40*sin(angle*pi/180)) * (.3/50)
+        ap = (angle+3*45/2)*pi/180
+        am = (angle-3*45/2)*pi/180
+        
+        result[+ci].angle = angle
+        result[ci].G_wt = EF.density(length*0.3/50; R = { R_norm, 0, 0 },
+                    u0 = { -sin(ap)*cos(pi/9),  cos(ap)*cos(pi/9),  sin(pi/9) },
+                    uf = { -sin(ap)*cos(pi/9), -cos(ap)*cos(pi/9),  sin(pi/9) }, setTwist(-2*pi/10.5)) * 8*pi^2 / 50^3
+        result[ci].G_wa = EF.density(length*0.3/50; R = { R_norm, 0, 0 },
+                    u0 = { -sin(am)*cos(pi/9),  cos(am)*cos(pi/9), -sin(pi/9) }
+                    uf = { -sin(am)*cos(pi/9), -cos(am)*cos(pi/9), -sin(pi/9) }, setTwist(-2*pi/10.5)) * 8*pi^2 / 50^3
+        result[ci].G_lb = EF.density(length*0.3/50; R = { R_norm, 0, 0 },
+                    u0 = { -sin(ap)*cos(pi/9),  cos(ap)*cos(pi/9),  sin(pi/9) },
+                    uf = { -sin(am)*cos(pi/9), -cos(am)*cos(pi/9), -sin(pi/9) }, setTwist(pi-2*pi/10.5)) * 8*pi^2 / 50^3
+        sprint(result[ci])
+        ci = that + 1
+    )
+    
+    output[^top(result)]
+    output =! result
+    print_string(f_str, "../../Test/LacLooping/LacLooping_", length, ".txt")
+    
+    saveTable(f_str, output)
+}
+
+
+testHighE :: {
+    
+    nsegs := 100 |500
+    x := 0.
+    y := 0.
+    z := 2*pi
+    k := 10
+    samples :=  1e4
+    dr := .01|e10
+    dangle := .01
+    
+    L := 1.
+    lp := 3.5                | do 4 when comparing against halfbend()s
+    lt := 5.
+    
+    k1 := k*nsegs
+    ls := L/nsegs
+    mean_bend := 2*pi/nsegs
+    lp1 := lp/ls
+    lt1 := lt/ls
+    lpaz := lp/ls*abs(sin(mean_bend))
+    
+    if nsegs > 1  then n_n1 := nsegs/(nsegs-1)
+    else  n_n1 := 1.
+    
+    dr2 := 1*dr
+    k2 := 1*(k1*n_n1)
+    kaz := 1*k2*(z/nsegs)^2
+    x2 := 1*x
+    y2 := 1*y
+    z2 := 1*z
+    lp2 := 1*(lp1*n_n1)
+    lpaz := 1*lp1*abs(sin(mean_bend))
+    lt2 := 1*(lt1*n_n1)
+    
+    table_to_display := bend
+    dist_to_display := 1
+    redoRalc := true
+    store_all_configs := false
+    
+    mode := 15
+    perturbative := true
+    
+        | mode 1 = 1D extensible spring; square-well bias (use for nsegs = 1)
+        | mode 2 = 1D extensible spring; Gaussian bias for nsegs >= 1
+        | mode 3 = 2D bending chain, cyclization (tangent only)
+        | mode 4 = 2D bending chain, cyclization (tangent only), arbitrary rotation
+        | mode 5 = 1D extensible 1/2 spring
+        
+        | mode 6 = 2D extensible spring
+        | mode 7 = WLC 1/2 cyclization, no twist (R only)
+        | mode 8 = WLC 1/2 cyclization + R constraint, no twist
+        | mode 9 = WLC 1/2 cyclization + R constraint, no twist, arbitrary rotation
+        | mode 10 = 3D extensible spring
+        
+        | mode 11 = WLC 1/2 cyclization (tangent only)
+        | mode 12 = WLC 1/2 cyclization + R constraint (tangent only)
+        | mode 13 = WLC 1/2 cyclization + R constraint (tangent only), arbitrary rotation (a)
+        | mode 14 = WLC 1/2 cyclization + R constraint (tangent only), arbitrary rotation (b)
+        | mode 15 = WLC cyclization, including R constraint
+    
+    
+    tol :: {
+        
+        k :: x0 :: drs :: [] double
+        E :: error :: dr :: N :: dims :: cd :: double
+        
+        code
+        
+        dims = 1
+        k[^1], x0[^1], drs[^1]
+        if trap( { k[1], x0[1], error } = args ) /= passed  then (
+            if trap(
+                dims = top(args[1])
+                k[^dims], x0[^dims], drs[^dims]
+                k = args[1]
+                x0 = args[2]
+                error = args[<3, top(args)>]
+            ) /= passed  then (
+                printl("usage:  { dr, N } = tol(k/{k1, k2, ...}, x0/{x0_1, x0_2, ...}, error)")
+                return
+        )   )
+        error = that / 2^.5     | so dr error = N error = tot error / 2^.5
+        
+        for cd in <1, dims>  (
+            E = 0.5*k[cd]*x0[cd]^2
+            drs[cd] = abs(6*error/(k[cd]*max(1, abs(2*E-1))))^.5        )
+        
+        dr = min(drs)
+        
+        N = 1
+        for cd in <1, dims>  &
+            N = that * max(1, (2*pi/k[cd])^.5/(2*dr))
+        
+        return { dr, new(ceil(N/error^2)) }
+    }
+    
+    
+    spring :: {
+        
+        c1 :: int
+        ans :: double
+        params :: { k :: double }
+        
+        code
+        
+        params = { k }
+        (params << args)()
+        
+        ans = 1
+        for c1 in <1, top(args)>  &
+            ans = that * (params.k/(2*pi))^0.5 * e^(-0.5*params.k*args[c1]^2)
+        
+        return new(ans)
+    }
+    
+    
+    halfbend :: {
+        
+        l :: int
+        term :: ans :: double
+        N := (L/2)/(2*lp)       | L/2 since we're projecting the halfway point
+        
+        code
+        
+        ans = l = 0
+        loop
+            term = (2*l+1) * e^(-l*(l+1)*N)
+            if l mod 2 == 1  then term = -that
+            
+            ans = that + term
+            
+            l = l + 1
+        until term == 0
+        
+        if (mode == 6 or mode == 7 or mode == 9 or mode == 10) and ans^2 < 1e-30  then &
+            printl("warning:  Ylms are not accurate")
+        
+        return new(ans/(4*pi))
+    }
+    
+    
+    spring_init :: {
+        
+        c3 :: int
+        to_do :: [3] bool
+        xyz2 :: { x2, y2, z2 }
+        sigma_0 := dr/nsegs
+        sigma := 0.5/k^.5  |(2/pi^2/k)^.5
+        
+        code
+        
+        MC.init(;
+            { shift; return k1*shift^2/2},
+            { slide; return k1*slide^2/2 },
+            { rise; return k1*rise^2/2 },
+            { azimuth; return 0 },
+            
+            code
+            
+            for c3 in <1, 3>  (
+                if to_do[c3]  then &
+                    distRange[c3] = { -max((20/k1)^.5, z2/nsegs+8/k2^.5), -this[1], 10000 }
+                else (
+                    distRange[c3] = { 0, 0, 1 }
+            )   )
+            distRange[azimuth] = { 0, 0, 1 } )
+            
+        if not perturbative  then &
+            
+            MC.init( ;
+                { shift; return k2*(shift-x2/nsegs)^2/2 }, { slide; return k2*(slide-y2/nsegs)^2/2 },
+                { rise; return k2*(rise-z2/nsegs)^2/2 }, { azimuth; return 0 }
+                
+                code
+                
+                for c3 in <1, 3>  (
+                    if to_do[c3] == true  then (
+                        distRange[c3] = { xyz2[c3]/nsegs-5/k2^.5, 2*xyz2[c3]/nsegs-this[1], 100 }    )
+                    else  (
+                        distRange[c3] = { 0, 0, 1 }
+                )   )
+                distRange[azimuth] = { 0, 0, 1 }
+                biased_distribution = true            )
+        
+        else  MC.propagate(nsegs; return { x2/nsegs, y2/nsegs, z2/nsegs, 0, 0, 0 })
+    }
+    
+    
+    WLC_init :: {
+        
+        doing_twist := true
+        doing_2D := false
+        
+        code
+        
+        MC.initWormlike( ; segment_length = ls, persistence_length = lp, do_twist = doing_twist, init_2D = doing_2D,
+            BendRange = { 0, min(pi, max((24/lp1)^.5, mean_bend + 5/lp2^.5)), 10000 }
+            if doing_2D  then BendRange[1] = -BendRange[2]
+            if doing_twist  then (
+                twist_persistence_length = lt, unstressed_twist = 0.
+                TwistRange = { -max((24/lt1)^.5, 5/lt2^.5), -this[1], 10000 }   )      )
+        
+        
+        if not perturbative  then (
+            
+            scale := .3
+            MC.init( ;
+                
+                if doing_2D == true  then &
+                    { bend; return lp2*(bend-mean_bend)^2/2 }
+                else  { bend, azimuth; return scale*lp2*(bend*sin(azimuth))^2/2 + lp2*(bend*cos(azimuth)-mean_bend)^2/2 }
+                
+                if doing_twist  then { twist; return lt2*twist^2/2 }
+                
+                code
+                
+                segmentLength(ls)
+                
+                if doing_2D  then (
+                    distRange[bend] = { max(0, mean_bend - 5/lp2^.5), 2*mean_bend-this[1], 100 },
+                    distRange[azimuth] = { 0, 0, 1 }        )
+                else  (
+                    distRange[bend] = { mean_bend - 5/lp2^.5, 2^.5*mean_bend + 5/lp2^.5, 100 }
+                    distRange[azimuth] = { max(-pi, -5/(scale*lp2*4*pi^2/nsegs^2)^.5), -this[1], 100 }      )
+                
+                if doing_twist  then &
+                    distRange[twist] = { -5/lt2^.5, -this[1], 100 }
+                
+                biased_distribution = true     )        )
+        
+        else  MC.propagate(nsegs; return { 0, 0, ls, 1.0*mean_bend, 0, 0 }; poly_translate_mode = 0)
+    }
+    
+    
+    inits :: {
+        { code, nsegs = 1, k1 = k } : spring_init : { to_do = { false, false, true }, code,
+                MC.init(; { rise; return 0 }, { azimuth; return 0 };
+                    distRange[rise] = { z-dr2, z+dr2, 2 }, distRange[azimuth] = { 0, 0, 1 }, biased_distribution = true )  }
+        spring_init : { to_do = { false, false, true } }
+        WLC_init : { doing_2D = true, doing_twist = false }
+        WLC_init : { doing_2D = true, doing_twist = false }
+        spring_init : { to_do = { false, false, true } }
+        
+        spring_init : { to_do = { true, false, true } }
+        WLC_init : { doing_twist = false }
+        WLC_init : { doing_twist = false }
+        WLC_init : { doing_twist = false }
+        spring_init : { to_do = { true, true, true } }
+        
+        WLC_init
+        WLC_init
+        WLC_init
+        WLC_init
+        WLC_init
+    }
+    
+    segs :: { 1, nsegs, nsegs, nsegs, nsegs/2, nsegs, nsegs/2, nsegs/2, nsegs/2, nsegs, nsegs/2, nsegs/2, nsegs/2, nsegs/2, { nsegs/2, nsegs } }
+    fbs :: { false, false, false, false, false, false, false, false, false, false, false, false, false, false, false }
+    fas :: { false, false, false, false, false, false, true, true, true, false, true, true, true, true, true }
+    
+    
+    P_args :: {
+        { code, at(r, { *, *, testHighE.z }) }
+        { code, at(r, { *, *, testHighE.z }) }
+        { code, at(u, { 0, { 0 }, { 1 } }) }
+        { code, u0 = { 0.6, 0, 0.8 }, at(u, { 0.6, { 0 }, { 0.8 } }) }
+        { code, at(r, { *, *, testHighE.z/2 }) }
+        
+        { code, at(r, { testHighE.x, *, testHighE.z }) }
+        { code, at(r, { *, 0, * }), at(u, { 0, 0, -1 }) }
+        { code, at(r, { L/pi, 0, 0 }), at(u, { 0, 0, -1 }) }
+        { code, n0 = { -0.218679, 0.966645, -0.13333 }, at(r, { L/pi*n0.x, L/pi*n0.y, L/pi*n0.z }),
+                u0 = { cos(.6), sin(.6)*cos(1.1), sin(.6)*sin(1.1) }, at(u, { -u0.x, -u0.y, -u0.z }) }
+        { code, at(r, { testHighE.x, testHighE.y, testHighE.z }) }
+        
+        { code, at(u, { 0, 0, -1 }), at(n, { -1, 0, {0} }) }        | no r-constraint -- n-constraint breaks the degeneracy
+        { code, at(r, { L/pi, 0, 0 }), at(u, { 0, 0, -1 }), at(n, { -1, 0, {0} }) }
+        { code, n0 = { -0.265885, 0.962503, -0.0537973 }, at(r, { L/pi*n0.x, L/pi*n0.y, L/pi*n0.z }),
+                u0 = { cos(.6), sin(.6)*cos(1.1), sin(.6)*sin(1.1) }, at(u, { -u0.x, -u0.y, { -u0.z } }), at(n, { { -n0.x }, -n0.y, { -n0.z } }) }
+        { code, n0 = { -0.265885, 0.962503, -0.0537973 }, at(r, { L/pi*n0.x, L/pi*n0.y, L/pi*n0.z }),
+                u0 = { cos(.6), sin(.6)*cos(1.1), sin(.6)*sin(1.1) }, at(u, { -u0.x, {-u0.y},  -u0.z  }), at(n, { { -n0.x },  -n0.y , {-n0.z} }) }
+        { code, at(r, { *, 0, * }; segment = nsegs/2), at(r, { 0, 0, 0 }), at(u, { 0, 0, {1} }), at(n, { {1}, 0, {0} }) }
+    }
+    
+    
+    preds :: {
+        spring(z),
+        spring(z),
+        spring(2*pi; k = lp)
+        spring(2*pi; k = lp)
+        spring(z/2; k = that*2),
+        
+        spring(x, z),
+        halfbend(pi)/(2*L)
+        *
+        *
+        spring(x, y, z),
+        
+        halfbend(pi)/(2*pi)/2       | /2 since bending along both y and -y both contribute to halfbend()
+        *
+        *
+        *
+        ans := L/(2*lp)      | ans = L_norm
+        ans = e^(-(pi^2/ans - (0.2639 - 0.0383*lt/lp + 0.25)*ans + 6.5*log(ans) - 0.5*log(lt/lp) - log(2.784))) / (2*lp)^3 / (2*L)
+    }
+    
+    prints :: { { code, print("dr = ", dr2) }, { code, print("x2 = ", x2, ";  k = ", k2) }, 
+                { code, print("lp = ", lp2) }, { code, print("lp = ", lp2, "; lpaz = ", lpaz) } }
+    
+    get_params :: { { code, dr2 = 3^.5*MC.hit_stats.tot_stdev[1] },
+                    { code, { x2, k2 } = { MC.hit_stats.tot_mean[1]*nsegs, 1/MC.hit_stats.tot_stdev[1]^2 } },
+                    { code, lp2 = 1/MC.hit_stats.tot_stdev[4]^2 }
+                    { code, { lp2, lpaz } = { 1/MC.hit_stats.tot_stdev[4]^2, 1/MC.hit_stats.tot_stdev[5]^2 } } }
+    
+    code
+    
+    if redoRalc  then inits[mode]()
+    
+    print_range :: {
+        code
+        print(tbl_bounds[args[1]][1], ":", tbl_bounds[args[1]][2], ":", tbl_bounds[args[1]][1], "+",
+                tbl_bounds[args[1]][2], "*", tbl_bounds[args[1]][3]-1, ";") }
+    
+    tbl_bounds :: *
+    if not perturbative  then (
+        saveTable("old_P", MC.P_tables[table_to_display](dist_to_display)[2])
+        tbl_bounds = @MC.P_tables[table_to_display](dist_to_display)[1]
+        print("x = "), print_range(1), print(" x2 = ")
+        if top(tbl_bounds) == 1  then printl("1;")
+        else  (
+            print_range(2)
+            printl()
+    )   )
+    else if perturbative  then (
+        saveTable("old_P", { 0 })
+        printl("x = 0; x2 = 0;")        )
+    
+    if not perturbative  then (
+        saveTable("old_biased_P", MC.biased_P_tables[table_to_display](dist_to_display)[2])
+        
+        tbl_bounds = @MC.biased_P_tables[table_to_display](dist_to_display)[1]
+        print("y = "), print_range(1), print(" y2 = ")
+        
+        if top(tbl_bounds) == 1  then printl("1;")
+        else  (  print_range(2), printl()  )
+        
+        if table_to_display == 4 and MC.init.params.distRange[5].samples > 1  then &
+            printl("xjcbn = abs(sin(x));\nyjcbn = abs(sin(y));")
+        else  printl("xjcbn = 0*old_P'+1;\nyjcbn = 0*hits'+1;")
+        printl()        )
+    
+    if redoRalc  then (
+        sprint(MC.density(segs[mode], samples;
+                (this<<P_args[mode])(),
+                dr = testHighE.dr, dangle = testHighE.dangle,
+                minE_method = 4
+                max_hits = 1e6
+                max_iterations = 100
+                poly_translate_mode = 0
+                perturbative = testHighE.perturbative
+                if not perturbative  then (
+                    fixed_bend = fbs[mode]
+                    fixed_azimuth = fas[mode]       )
+                sample_all = store_all_configs
+                reinit_weight = 0.0     ) )
+        
+        print("compare:  ")
+        if not perturbative  then &
+            sprint( trap( { preds[mode] }, MC.P.result/this[1][1] ) )
+        else  (
+            sprint( trap( { preds[mode] }, MC.P.result/this[1][1], MC.P.integrated_result/this[1][1], MC.P.ZC_result/this[1][1] ) )
+    )   )
+    
+    if not perturbative  then &
+        saveTable("new_biased_P", MC.biased_P_tables[table_to_display](dist_to_display)[2])
+    
+    MC.SaveHitTrajectories(table_to_display, dist_to_display)
+    saveTable("tmp_chain", MC.Segments[*].r)
+    
+    if store_all_configs  then MC.SaveHitSegments()
+}
+
+
+compareCyclization :: {
+    
+    do_EF := false
+    do_ZC := false
+    do_MC := false
+    do_MC_high_T := true
+    do_MC_eigenmode := false
+    
+    MC_analytic_twist := true
+    
+    L_step := 1
+    L_max := 450
+    L_start := 331
+    L_stop := 450
+    
+    lp := 150
+    lt := lp*2.08
+    ut := 98/lp
+    
+    lmax := 18
+    kstep := 2
+    kmax := 3000
+    
+    nsegs := 20 |500
+    n_samples := 1e6
+    bias_factor := 10
+    dr := .2
+    dangle := .5
+    supertwists := 2
+    
+    n_n1 := nsegs/(nsegs-1)
+    mean_bend := 2*pi/nsegs
+    (runs :: int) = L_max / L_step
+    
+    MC_high_T :: MC_eigenmode :: MC
+    top_index := 9+2*supertwists
+    
+    result_mask :: { l :: double, G_ef :: MC :: MC_err :: MC_high_T :: MC_high_T_err :: MC_eigenmode :: MC_eigenmode_err :: double }
+    old_result :: [] result_mask
+    result :: [runs] result_mask
+    
+|*    old_result :: [*][9, top_index] :: double
+    result[*][9, top_index] :: double
+    result_mask[9, top_index] :: double  *|
+    
+    c1 :: c2 :: c3 :: idx :: supertwist :: int
+    L :: ls :: mean_twist :: double
+    
+    if not do_MC_eigenmode  then MC_eigenmode_samples := 0
+    else  MC_eigenmode_samples := n_samples
+    
+    fixSamples :: {
+        
+        cst :: cs :: int
+        MCmult :: alpha :: phi0 :: old_PW_sum :: new_PW_sum :: old_PW2_sum :: new_PW2_sum :: this_lt :: double
+        
+        this_lt = lt
+        if MC_analytic_twist  then lt = 1.e10
+        
+        code
+        
+        alpha = this_lt/(2*L)
+        old_PW_sum = new_PW_sum = old_PW2_sum = new_PW2_sum = 0
+        
+        if MC_analytic_twist  then (
+        for cs in <1, args[1].samples_num>  (
+            
+            phi0 = acos(dot(args[1].sampled_ns[cs][1], { 1, 0, 0 }))    | don't worry about sign(phi0)
+            
+            MCmult = 0.
+            for cst in <-10, 10>  &
+                MCmult = that + e^(-alpha*(phi0 + 2*pi*cst)^2)
+            MCmult = that * (alpha/pi)^.5
+            
+            old_PW_sum = that + e^args[1].P_weights[cs][1]
+            old_PW2_sum = that + e^(2*args[1].P_weights[cs][1])
+            args[1].P_weights[cs][1] = that + log(MCmult)
+            new_PW_sum = that + e^args[1].P_weights[cs][1]
+            new_PW2_sum = that + e^(2*args[1].P_weights[cs][1])
+        ))
+        
+        if old_PW_sum /= 0. or new_PW_sum /= 0.  then (
+            args[1].P.result = that * (new_PW_sum/old_PW_sum)
+            args[1].P.error = that * (new_PW2_sum/old_PW2_sum)^.5       )
+    }
+    
+    
+    code
+    
+    initRandom(0)
+    
+    if do_EF  then EF.init(lmax, kstep, kmax)
+    
+    for c1 in <L_start/L_step, min(runs, L_stop/L_step)>  (
+    for supertwist in <-supertwists, supertwists>  (
+        
+        result[c1].l = L = c1*L_step
+        result_mask.l = 1
+        ls = L/nsegs
+        mean_twist = 2*pi*(floor(L*ut/(2*pi) + 0.5) + supertwist) / nsegs
+        
+        if do_EF and supertwist == 0  then (
+            result[c1].G_ef = EF.density(L; persistence_length = lp, twist_persistence_length = lt, unstressed_twist = ut)*8*pi^2
+            result_mask.G_ef = 1        )
+        
+        if do_MC_eigenmode or do_ZC  then &
+            MC_eigenmode.initWormlike( ; segment_length = ls, persistence_length = lp, twist_persistence_length = lt,
+                unstressed_twist = ut, do_twist = true,
+                BendRange = { 0, min(pi, max((24/(lp/ls))^.5, mean_bend + 5/(lp*n_n1/ls)^.5)), 10000 }
+                TwistRange = { mean_twist-max((24/(lt/ls))^.5, 5/(lt*n_n1/ls)^.5), 2*mean_twist-this[1], 10000 } )
+        
+        if do_MC and supertwist == 0  then &
+            MC.initWormlike( ; segment_length = ls, persistence_length = lp, twist_persistence_length = lt,
+                unstressed_twist = ut, do_twist = true,
+                BendRange = { 0, min(pi, max((24/(lp/ls))^.5, mean_bend + 5/(lp*n_n1/ls)^.5)), 10000 }
+                TwistRange = { ut*ls-max((24/(lt/ls))^.5, 5/(lt*n_n1/ls)^.5), 2*ut*ls-this[1], 10000 } )
+        
+        if do_MC_high_T and supertwist == 0  then (
+            MC_high_T.initWormlike( ; segment_length = ls, persistence_length = lp, twist_persistence_length = lt,
+                unstressed_twist = ut, do_twist = true,
+                BendRange = { 0, min(pi, max((24/(lp/ls))^.5, mean_bend + 5/(lp*n_n1/ls)^.5)), 10000 }
+                TwistRange = { ut*ls-max((24/(lt/ls))^.5, 5/(lt*n_n1/ls)^.5), 2*ut*ls-this[1], 10000 } )
+            bias_temp := 1.5    | 1 / ( 1 - log(bias_factor)*L/(2*pi^2*lp) )
+            MC_high_T.initWormlike( ; segment_length = ls, persistence_length = lp/bias_temp, twist_persistence_length = lt/bias_temp,
+                unstressed_twist = ut, do_twist = true,
+                biased_distribution = true,
+                BendRange = { 0, min(pi, max((24/(lp/ls))^.5, mean_bend + 5/(lp*n_n1/ls)^.5)), 10000 }
+                TwistRange = { ut*ls-max((24/(lt/ls))^.5, 5/(lt*n_n1/ls)^.5), 2*ut*ls-this[1], 10000 } )        )
+        
+        if do_MC_eigenmode or do_ZC  then (
+            
+            if abs(mean_twist*nsegs - L*ut)/(2*pi) < 3^.5*(lp/lt) or do_MC_eigenmode  then (
+            
+                MC_eigenmode.propagate(nsegs; return { 0, 0, ls, mean_bend, (segment-0.5)*mean_twist, mean_twist }; poly_translate_mode = 0)
+                MC_eigenmode.density(nsegs, MC_eigenmode_samples;
+                    at(r, { *, 0, * }; segment = nsegs/2), at(r, { 0, 0, 0 }), at(u, { 0, 0, {1} }), at(n, { {1}, 0, {0} }),
+                    dr = compareCyclization.dr, dangle = compareCyclization.dangle, perturbative = true,
+                    minE_method = 4, max_hits = 1e6, max_C = 1.e-5, max_iterations = 1     )
+                fixSamples(MC_eigenmode)        )
+            
+            else  MC_eigenmode.P.ZC_result = 0
+            
+            if do_MC  then (
+                result[c1].MC_eigenmode = that + MC_eigenmode.P.result * 2*L * 8*pi^2
+                result[c1].MC_eigenmode_err = (that^2 + (MC_eigenmode.P.error * 2*L * 8*pi^2)^2)^.5
+                result_mask.MC_eigenmode = result_mask.MC_eigenmode_err = 1     )
+            if do_ZC  then (
+                result[c1][9+supertwist+supertwists] = MC_eigenmode.P.ZC_result * 2*L * 8*pi^2
+                result_mask[9+supertwist+supertwists] = 1
+        )   )
+        
+        if do_MC and supertwist == 0  then (
+            MC.density(nsegs, n_samples;
+                at(r, { 0, 0, 0 }), at(u, { 0, 0, {1} }),
+                if not MC_analytic_twist  then at(n, { {1}, 0, {0} }),
+                dr = compareCyclization.dr*L, dangle = compareCyclization.dangle,
+                max_hits = 1e6     )
+            fixSamples(MC)
+            
+            { result[c1].MC, result[c1].MC_err } = { MC.P.result*8*pi^2, MC.P.error*8*pi^2 }
+            result_mask.MC = result_mask.MC_err = 1     )
+        
+        if do_MC_high_T and supertwist == 0  then (
+            MC_high_T.density(nsegs, n_samples;
+                at(r, { 0, 0, 0 }), at(u, { 0, 0, {1} }),
+                if not MC_analytic_twist  then at(n, { {1}, 0, {0} }),
+                dr = compareCyclization.dr*L, dangle = compareCyclization.dangle,
+                max_hits = 1e6     )
+            fixSamples(MC_high_T)
+            
+            { result[c1].MC_high_T, result[c1].MC_high_T_err } = { MC_high_T.P.result*8*pi^2, MC_high_T.P.error*8*pi^2 }
+            result_mask.MC_high_T = result_mask.MC_high_T_err = 1       )
+        
+        if supertwist == supertwists  then (
+            
+            trap( readTable(old_result, Load("cyclization_compare.txt")) )
+            for c2 in <1, top(old_result)>  (
+                idx = old_result[c2].l / L_step
+                if idx == old_result[c2].l / L_step and idx >= 1 and idx <= runs  then (
+                    if c1 /= idx  then &
+                        result[idx] = old_result[c2]
+                    else  (
+                        for c3 in <1, 9+2*supertwists>  (
+                        if result_mask[c3] == 0  then (
+                            result[idx][c3] = old_result[c2][c3]
+            )   )   )   ))
+            
+            sprint(result[c1])
+|            saveTable("../../Test/results/cyclization_compare.txt", result)
+            saveTable("cyclization_compare.txt", result)
+        )
+        
+        springCleaning()
+    ))
+}
+
+
+
+
+recoverEnergyF :: {
+    
+    long_L_start := 21
+    long_L_step := 21
+    long_L_max := 210
+    short_L_start := 21
+    short_L_step := 21
+    short_L_max := 84
+    
+    lp := 150
+    ls := 1
+    n_samples := 1e6
+    num_kinks := 0
+    kink_angles := 10
+    
+    mode := 1       | 1 = ZC, 2 = MC, 3 = MC high T
+    init_id := 1    | 1 = WLC, 2 = soft WLC, 3 = sequence dependent
+    
+    cL_max :: cS_max :: int
+    cL_max = long_L_max / long_L_step
+    cS_max = short_L_max / short_L_step
+    
+    result :: [cS_max*cL_max] { short_L :: long_L :: P :: double, [kink_angles^num_kinks] double }
+    error :: [cS_max*cL_max] { short_L :: long_L :: P :: double }
+    
+    cL :: cS :: c1 :: short_segs :: long_segs :: nsegs :: idx :: hits :: int
+    short_L :: long_L :: P :: err :: t_tb :: double
+    
+    sqnce :: string
+    
+    bend_fs :: { ; return 0.5*(lp/ls)*args[1]^2;          | dist 2:  f' = atan(t_tb), f'' = 1/(1+t_tb^2)
+|                   return 0.5*1.021236*(lp/ls)*(1-abs(args[1])/(3*pi))*args[1]^2;
+                   t_tb = args[1] * (lp / (2*ls))^.5, return 2.6933*(t_tb*atan(t_tb) - 0.5*log(1+t_tb*t_tb));
+                   t_tb = args[1] * (lp / (2*ls))^.5, return 4.09442*(t_tb^2/2 - 0.6*t_tb*atan(t_tb) + 0.5*0.5*log(1+t_tb*t_tb));
+                 }
+    
+    P_index := 3
+    one_loop :: {
+        
+        c1 :: index :: int
+        hold_letter :: string
+        
+        code
+        
+        for c1 in <1, kink_angles>  (
+            index = (long_segs-2) * (c1-1)/(kink_angles-1) + short_segs
+            hold_letter = sqnce[<2*index+1, 2*index+1>]
+            print_string(sqnce, sqnce[<1, 2*index>], "3", sqnce[<2*index+2, size(sqnce)>])
+            to_do(args[1])
+            print_string(sqnce, sqnce[<1, 2*index>], hold_letter, sqnce[<2*index+2, size(sqnce)>])      )
+        
+        code
+        
+        depth := args[1]
+        if depth < num_kinks  then &
+            (this.to_do :: this)#2(depth+1)
+        else  &
+            to_do :: { code, args[1]() }
+    }
+    one_loop#2(1)
+    
+    if num_kinks == 0  then &
+        do_kinks :: { ; P_index = 3, args() }
+    else  &
+        do_kinks :: { args_alias :: * ; P_index = 4, args_alias = @args, one_loop(args_alias) }
+    
+    code
+    
+    initRandom(0)
+    
+    MC.init( 3 ; { bend; return bend_fs#init_id(bend); return 0; return bend_fs#init_id(bend-pi/2) }, { azimuth; return 0; return 0; return 0 } ;
+             distRange[bend] = { { -pi, -pi, -pi }, { pi, pi, pi }, 1000 }, distRange[azimuth] = { { 0, 0, 0 }, { 0, 0, 0 }, 1 },
+             segmentLength(ls) )  
+    
+    if mode == 3  then &
+        MC.init( 2 ; { bend; return 0.5*(lp/ls/1.5)*bend^2; return 0 }, { azimuth; return 0; return 0 } ;
+                 distRange[bend] = { { -pi, -pi }, { pi, pi }, 1000 }, distRange[azimuth] = { { 0, 0 }, { 0, 0 }, 1 },
+                 segmentLength(ls); biased_distribution = true )  
+    
+    MC.ExportDists()
+    
+    idx = 1
+    for cS in <short_L_start/short_L_step, cS_max>  (
+    for cL in <long_L_start/long_L_step, cL_max>  (
+        
+        short_L = cS*short_L_step
+        long_L = cL*long_L_step
+        short_segs = short_L / ls
+        long_segs = long_L / ls
+        nsegs = (long_L + short_L) / ls
+        
+        sqnce = ""
+        for c1 in <1, short_segs-1>  print_string(sqnce, sqnce, "1 ")
+        print_string(sqnce, sqnce, "2 ")
+        
+        for c1 in <1, long_segs-1>  print_string(sqnce, sqnce, "1 ")
+        print_string(sqnce, sqnce, "2")
+        
+        do_kinks( code,
+            
+            if mode == 1  then (
+                
+                MC.propagate(nsegs;
+                        if extract(sqnce, segment*2-1, segment*2-1) == "1"  then &
+                            return { 0, 0, ls, pi*(1-num_kinks/2)/(nsegs-2), 0, 0 }
+                        else  return { 0, 0, ls, pi/2, 0, 0 }
+                        
+                        code
+                        
+                        poly_translate_mode = -1)
+                
+                MC.density(nsegs, 0; sequence(sqnce),
+                        at(r, { 0, *, * }; segment = short_segs), at(r, { 0, *, 0 }), at(u, { 0, {0}, {1} }), dr = dangle = 1e-5,
+                        perturbative = true, minE_method = 1, log_C = false, max_iterations = 1000, poly_translate_mode = -1 )
+                
+                if trap( P = MC.P.ZC_result * 8*pi^2 ) /= passed  then P = 0        )
+                
+            else if mode == 2 or mode == 3  then &
+                
+                { P, err, hits } = MC.density(nsegs, n_samples; sequence(sqnce),
+                        at(r, { 0, *, 0 }), at(u, { 0, {0}, {1} }),
+                        dr = long_L/5, dangle = 0.7, poly_translate_mode = -1 )
+          
+            result[idx].short_L = short_L
+            result[idx].long_L = long_L
+            result[idx][P_index] = P
+            
+            P_index = that + 1
+        )
+        
+        if mode /= 1  then error[idx] = { short_L, long_L, err }
+        sprint(result[idx])
+        idx = that + 1
+        
+        springCleaning()
+    ))
+    
+    saveTable("bow_table.txt", result)
+    if mode /= 1  then saveTable("bow_error.txt", error)
+}
+
+
+
+RF2 :: {
+    
+    long_L_start := 10
+    long_L_step := 10
+    long_L_max := 250
+    short_L_start := 1
+    short_L_step := 1
+    short_L_max := 20
+    
+    lp := 150.
+    ls := 10
+    n_samples := 1e6
+    num_kinks := 0
+    kink_angles := 10
+    
+    mode := 1       | 1 = ZC, 2 = MC, 3 = MC high T
+    init_id := 3    | 1 = WLC, 2 = soft WLC, 3 = sequence dependent
+    
+    cL_max :: cS_max :: int
+    cL_max = long_L_max / long_L_step
+    cS_max = short_L_max / short_L_step
+    
+    result :: [cS_max*cL_max] { short_L :: long_L :: P :: double, [kink_angles^num_kinks] double }
+    error :: [cS_max*cL_max] { short_L :: long_L :: P :: double }
+    
+    cL :: cS :: c1 :: c2 :: short_segs :: long_segs :: nsegs :: idx :: hits :: int
+    short_L :: long_L :: P :: err :: double
+    
+    sqnce :: string
+    
+    lp1 := lp2 := lp3 := lp
+    bend_fs :: { ;  return 0.5*(lp1/ls)*args[1]^2;
+                    
+                    if abs(abs(args[1]) - 5*(ls/lp2)^.5) < .01  then &
+                        return -log(.01*(2*pi*ls/lp2)^.5/.02)
+                    else  return 0.5*(lp2/ls)*args[1]^2
+                    
+                    code
+                    
+                    if abs(args[1]) > 3*(ls/lp3)^.5 and abs(args[1]) < 6*(ls/lp3)^.5  then &        | 4 sigma
+                        return 0.5*(lp3/ls)*(9*ls/lp3)
+                    else  return 0.5*(lp3/ls)*args[1]^2
+                 }
+    
+    tune :: {
+        
+        low :: mid :: high :: low_f :: mid_f :: high_f :: double
+        
+        code
+        
+        { low, high } = { args[2], args[3] }
+        args[1] = low, low_f = args()
+        args[1] = high, high_f = args()
+        
+        if low_f*high_f > 0  then (
+            print("tune error: ")
+            sprint( { low, low_f }, { high, high_f } )
+            return      )
+        
+        while abs(high-low) > .00000001  do (
+            
+            mid = (low+high)/2
+            args[1] = mid
+            mid_f = args()
+            
+            if mid_f*low_f > 0  then (
+                low = mid
+                low_f = mid_f   )
+            else  (
+                high = mid
+                high_f = mid_f
+        )   )
+    }
+    
+    
+    code
+    
+    initRandom(0)
+    
+    lps :: { lp1, lp2, lp3 }
+    
+    numBins := 100
+    bends :: derivs :: [numBins] double
+    one_angle :: one_deriv :: t1 :: t2 :: double
+    
+    for c1 in <1, 3>  (
+        
+        tune(lps[c1], 0, 5*lp;
+            
+            MC.init( ; { bend; return bend_fs#c1(bend) }, { azimuth; return 0 } ;
+                 distRange[bend] = { -pi/2, pi/2, 1000 }, distRange[azimuth] = { 0, 0, 1 },
+                 segmentLength(ls) )
+            
+            t1 = t2 = 0.
+            for cL in <1, 1000>  (
+                t1 = that + MC.P_tables[4](1)[2][cL]
+                t2 = that + cos(pi*(cL-1)/999 - pi/2) * MC.P_tables[4](1)[2][cL]        )
+            
+            return t2/t1 - e^(-ls/(2*lp))       )
+        
+        MC.density(40, 1e6)
+        
+        for c2 in <1, numBins>  (
+            one_angle = -pi + 2*pi*(c2-1)/(numBins-1)
+            bends[c2] = MC.density( ; at(u, { sin(one_angle), 0, cos(one_angle) }, dangle = 2*pi/numBins) )[1]
+            if c2 > 1 and c2 < numBins  then (
+                one_deriv = 2*log(bends[c2]) - log(bends[c2-1]) - log(bends[c2+1])
+                if one_deriv > 0  then &
+                    derivs[c2] = 1
+                else if one_deriv < 0  then (
+                    derivs[c2] = -1
+                    print("*")      )
+                else &
+                    derivs[c2] = 0
+        )   )
+        
+        sprint(bends)
+        sprint(derivs)
+        printl()
+    )
+    
+    sprint(lp, lps)
+}
+
+
+
+
+makeBowPlot :: {
+    
+    short_L_start := 21
+    short_L_step := 21
+    short_L_max := 84
+    diff_L_start := 0
+    diff_L_step := 21
+    diff_L_max := 84
+    
+    lp := 150.
+    lt := lp*2.08
+    ls := 21
+    n_samples := 1e7
+    
+    distance_cutaway := true
+    
+    cDs_num :: cSs_num :: int
+    cDs_num = (diff_L_max - diff_L_start)/diff_L_step + 1
+    cSs_num = (short_L_max - short_L_start)/short_L_step + 1
+    
+    result :: [cSs_num*cDs_num] { short_L :: long_L :: P :: error :: hits :: double }
+    
+    cD :: cS :: c1 :: c2 :: short_segs :: long_segs :: nsegs :: idx :: hits :: temp_samples :: int
+    short_L :: long_L :: P :: err :: t1 :: t2 :: T :: _dr :: R_sample :: double
+    
+    sqnce :: name :: string
+    
+    lp1 := lp2 := lp3 := lp4 := lp5 := lp6 := lp    | 1 = WLC, 2 = kink, 3 = slide
+    lps :: { lp1, lp2, lp3, lp4, lp5, lp6 }
+    strs :: { "WLC", "slide", "kink_1.7", "kink_2.1", "kink_2.45", "kink_2.6" }
+    
+    bend_fs :: { ;  return 0.5*(lp1/ls)*args[1]^2 / T;
+                    
+                    if abs(args[1]) > 3.5*(ls/lp2)^.5 and abs(args[1]) < 10*(ls/lp2)^.5  then &         | 3.5-10 sigma
+                        return 0.5*(lp2/ls)*(3.5^2*ls/lp2) / T
+                    else  return 0.5*(lp2/ls)*args[1]^2 / T
+                    
+                    code
+                    
+                    if abs(abs(args[1]) - 5.3*(ls/lp3)^.5) < .01  then &          | kink at 1.7
+                        return -log(.0042*(2*pi*ls/lp3)^.5/.02) / T
+                    else  return 0.5*(lp3/ls)*args[1]^2 / T
+                    
+                    code
+                    
+                    if abs(abs(args[1]) - 6.7*(ls/lp4)^.5) < .01  then &          | kink at 2.1
+                        return -log(.0035*(2*pi*ls/lp4)^.5/.02) / T
+                    else  return 0.5*(lp4/ls)*args[1]^2 / T
+                    
+                    code
+                    
+                    if abs(abs(args[1]) - 7.7*(ls/lp5)^.5) < .01  then &          | kink at 2.45
+                        return -log(.0042*(2*pi*ls/lp5)^.5/.02) / T
+                    else  return 0.5*(lp5/ls)*args[1]^2 / T
+                    
+                    code
+                    
+                    if abs(abs(args[1]) - 8.05*(ls/lp6)^.5) < .01  then &         | kink at 2.6
+                        return -log(.0048*(2*pi*ls/lp6)^.5/.02/2) / T
+                    else  return 0.5*(lp6/ls)*args[1]^2 / T
+                 }
+    
+    tune :: {
+        
+        low :: mid :: high :: low_f :: mid_f :: high_f :: double
+        
+        code
+        
+        { low, high } = { args[2], args[3] }
+        args[1] = low, low_f = args()
+        args[1] = high, high_f = args()
+        
+        if low_f*high_f > 0  then (
+            print("tune error: ")
+            sprint( { low, low_f }, { high, high_f } )
+            return      )
+        
+        while abs(high-low) > .00000001  do (
+            
+            mid = (low+high)/2
+            args[1] = mid
+            mid_f = args()
+            
+            if mid_f*low_f > 0  then (
+                low = mid
+                low_f = mid_f   )
+            else  (
+                high = mid
+                high_f = mid_f
+        )   )
+    }
+    
+    
+    if distance_cutaway  then short_L_start = short_L_max = 84
+    
+    
+    code
+    
+    
+    initRandom(0)
+    
+    for c1 in <1, 6>  (
+        
+        printl("\n*** Starting round ", c1)
+        
+        tune(lps[c1], 0, 5*lp;
+            
+            for c2 in <1, 2>  (
+                if c2 == 1  then T = 1
+                else  T = 1.5
+                
+                MC.init( 3 ; { bend; return bend_fs#c1(bend); return 0; return 0 }, { azimuth; return 0; return 0; return 0 };
+                     distRange[bend] = { { 0, 0, 0 }, { pi, pi, 1.e-20 }, 1000 }, distRange[azimuth] = { { -pi, -pi, -pi }, { pi, pi, pi }, 2 },
+                     segmentLength(ls), if c2 == 2  then biased_distribution = true )
+            )
+            
+            t1 = t2 = 0.
+            for cD in <1, 1000>  (
+                t1 = that + MC.P_tables[4](1)[2][cD]
+                t2 = that + cos(pi*(cD-1)/999) * MC.P_tables[4](1)[2][cD]       )
+            
+            return t2/t1 - e^(-ls/lp)
+        )
+        
+        MC.ExportDists()
+        
+        idx = 1
+        for cS in <short_L_start/short_L_step, short_L_max / short_L_step>  (
+        for cD in <diff_L_start/diff_L_step, diff_L_max / diff_L_step>  (
+            
+            short_L = cS*short_L_step
+            long_L = short_L + cD*diff_L_step
+            short_segs = short_L / ls
+            long_segs = long_L / ls
+            nsegs = (long_L + short_L) / ls
+            if distance_cutaway  then (
+                short_segs = 0
+                nsegs = long_L / ls     )
+            
+            _dr = long_L / 50
+            
+            sqnce = ""
+            for c2 in <1, short_segs-1>  (
+                if not distance_cutaway  then &
+                    print_string(sqnce, sqnce, "1 ")
+                else  print_string(sqnce, sqnce, "3 ")      )
+            
+            if short_segs > 0  then print_string(sqnce, sqnce, "2 ")
+            for c2 in <1, long_segs-1>  print_string(sqnce, sqnce, "1 ")
+            print_string(sqnce, sqnce, "2")
+            
+|*            MC.propagate(nsegs;
+                    if sqnce[segment*2-1] == "1"  then &
+                        return { 0, 0, ls, pi/(nsegs-2), 0, 0 }
+                    else  return { 0, 0, ls, pi/2, 0, 0 }
+                    
+                    code
+                    
+                    poly_translate_mode = -1)
+            
+            MC.density(nsegs, 0; sequence(sqnce),
+                    at(r, { 0, 0, 0 }), at(u, { 0, 0, 1 }), dr = dangle = 1e-5,
+                    perturbative = true, minE_method = 1, max_iterations = 1000, poly_translate_mode = -1 )
+            if trap( P = MC.P.ZC_result ) /= passed  then P = 0  *|
+            
+|            if not distance_cutaway  then (
+                { P, err, hits } = MC.density(nsegs, n_samples; sequence(sqnce),
+                    at(r, { 0, 0, 0 }), dr = _dr, poly_translate_mode = -1, max_hits = 1e5 )
+                P = that / (4*pi)
+                err = that / (4*pi)     | )
+|*            else  (
+                R_sample = short_L * 0.7
+                hits = MC.density(nsegs, n_samples; sequence(sqnce),
+                    at(r, { 0, 0, 0 }), dr = R_sample + _dr, poly_translate_mode = -1, max_hits = 1e5 )[3]
+                temp_samples = MC.P.runs
+                hits = that - MC.density( ; at(r, { 0, 0, 0 }), dr = R_sample - _dr )[3]
+                P = hits / ((4/3)*pi*( (R_sample+_dr)^3 - (R_sample-_dr)^3 )) / (4*pi) / temp_samples
+                if hits > 0  then err = P / hits^.5
+                else  err = 0       )  *|
+            
+            result[idx] = { short_L, long_L, P, err, hits }
+            sprint(result[idx])
+            idx = that + 1
+            
+            springCleaning()
+        ))
+        
+        if not distance_cutaway  then &
+            print_string(name, "bow_table_", strs[c1], ".txt")
+        else  print_string(name, "bow_table_", strs[c1], "_approx.txt")
+        
+        saveTable(name, result)
+    )
+}
+
+
+
+confinement :: {
+    
+    cL :: cR :: cI :: cS :: int
+    D1 :: D2 :: D3 :: [] { L :: R :: p :: double }
+    L :: R :: double
+    repeat :: sq :: [] char
+    sq_string :: string
+    segs :: {}
+    
+    
+    code
+    
+    L_step := 13
+    Ls_num := 100
+    R_step := 20
+    Rs_num := 100
+    
+    samples_num := 1e4
+    sequence := "actg"
+    
+    L_max := Ls_num*L_step
+    R_max := Rs_num*R_step
+    runs_num := Ls_num*Rs_num
+    
+    for cS in <1, Ls_num>  &
+        segs[cS] := cS*L_step
+    
+    repeat[*] =! sequence
+    repeat_length := top(repeat)
+    sq[^L_max+1]
+    for cI in <1, L_max+1>  &
+        sq[cI] = repeat[((cI-1) mod repeat_length) + 1]
+    
+    sq_string =! sq
+    
+    D1[^runs_num]
+    D2[^runs_num]
+    D3[^runs_num]
+    
+    printl("Initializing...")
+    MC.initBP()
+    printl("Generating samples...")
+    MC.density(segs, samples_num; bp_sequence(sq_string))
+    printl("Counting...")
+    
+    cI = 1
+    for cL in <1, Ls_num>  (
+    for cR in <1, Rs_num>  (
+        
+        L = cL*L_step
+        R = cR*R_step
+        
+        D1[cI] = { L, R, MC.density( ; for cS in <1, cL>  at(r, { *, *, R/2 }; segment = segs[cS]), dr = R/2 )[3]/samples_num }
+        D2[cI] = { L, R, MC.density( ; for cS in <1, cL>  at(r, { *, 0, R/2 }; segment = segs[cS]), dr = R/2 )[3]/samples_num }
+        D3[cI] = { L, R, MC.density( ; for cS in <1, cL>  at(r, { 0, 0, R/2 }; segment = segs[cS]), dr = R/2 )[3]/samples_num }
+        
+        cI = that + 1
+        springCleaning()
+        
+    ))
+    
+    saveTable("D1.txt", D1)
+    saveTable("D2.txt", D2)
+    saveTable("D3.txt", D3)
+}

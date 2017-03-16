@@ -1,0 +1,749 @@
+| These scripts handle the long-chain analytic (Spakowitz & Wang) computation.
+| They call the routines in Analytics.cpp.
+
+
+
+| polyType variables store the numerators and denominators of the continued fractions
+
+polyType :: {
+    header :: {  numVariables :: numTerms :: int  }
+    terms :: [] {  coef :: double, exponent :: [] int  }
+}
+
+
+
+
+| Gauss():  calculates the Gaussian approximation to the distribution -- valid only for long chains (L >> lp)
+
+Gauss :: {
+    
+    params :: {
+        persistence_length :: double
+        sum_R :: int
+        sum_tangent :: sum_twist :: bool        }
+    
+    L :: R :: rtrn :: double
+    
+    
+    code
+    
+    params = { 1, 0, false, false }
+    
+    if trap(
+        { L, R } = args
+        (params<<args)()
+    ) /= passed  then (
+        printl("usage: Gauss(L, R [; persistence_length/sum_R/sum_tangent/sum_twist = ...])")
+        return      )
+    
+    if L <= 0 or R < 0  then (
+        printl("Gauss() error:  L must be positive and R cannot be negative")
+        return      )
+    
+    params.sum_twist = that or params.sum_tangent
+    
+    if params.sum_R < 2  then (
+        rtrn = (3/4/pi/params.persistence_length/L)^1.5 * e^(-3*R*R/4/params.persistence_length/L)
+        if params.sum_R == 1  then (
+            rtrn = that * 4*pi*R*R
+    )   )
+    else  rtrn = 1
+    
+    if not params.sum_tangent  then rtrn = that/4/pi
+    if not params.sum_twist  then rtrn = that/2/pi
+    
+    return new(rtrn)
+}
+
+
+
+
+
+| The EF class computes the continued-fraction form of the distribution (Spakowitz and Wang)
+
+EF :: {
+    w_strings :: [] string          | the truncated, simplified { Wlm, w_plus, w_minus }; each string is one polynomial (num or denom)
+    rootStrings :: [] string        | the roots of the nums/denoms of each continued fraction; each string is a list of roots for one polynomial
+    Wlm_fracs :: int                | number of unique Wlm fractions (= number of w+ fractions = number of w- fractions)
+    
+    l_max :: int                    | the cutoff maximum l-value
+    K_max :: K_step :: double       | the upper limit of K-integration and the step size
+    
+    current_l_max :: int            | l_max can get overwritten during a Comps() call that doesn't actually reinitialize the strings
+    current_K_max :: current_K_step :: double
+    
+    doneInit := false
+    
+    { l_max, K_max, K_step } = { 0, 10, 0.01 }
+    { current_l_max, current_K_max, current_K_step } = { 0, 10, 0.01 }
+    
+    
+    
+        | init():  generates the continued fractions for a given l_max, and computes their roots/poles in 'K'
+    
+    init :: {
+        
+        l_counter :: nd_counter :: frac_counter :: m_counter :: j_counter :: rtrn :: int
+        
+        
+        code
+        
+        if trap(
+            if top(args) == 1  then args[2] := args[3] := 1        | in case we only want to deal w/ cyclization
+            { l_max, K_step, K_max } = args
+        ) /= passed  then (
+            printl("usage: myWLC.init(l_max [, K_step, K_max])")
+            return        )
+        
+        Wlm_fracs = 0
+        for l_counter in <0, l_max> &
+            Wlm_fracs = that + (l_counter+1)*(l_counter+2)/2
+        
+        if countComputations  then (
+            
+            numPolys := (Wlm_fracs*l_max/3 + 1.5*Wlm_fracs) * 6
+            numRootDoubles := 2*floor(0.5 + K_max/K_step)
+            w_string_size := 0.4969*l_max + 2.501
+            
+            frac_gen_time := 3.5e-08*l_max*l_max*l_max
+            root_gen_time := 5e-07*l_max
+            
+            gbl_size = that + numPolys * (numRootDoubles + w_string_size) * size(double)
+            gbl_time = that + numPolys * (frac_gen_time + numRootDoubles*root_gen_time)
+            
+            return      )
+        
+        
+        current_l_max = l_max
+        current_K_max = K_max
+        current_K_step = K_step
+        
+        w_strings[^3*Wlm_fracs*2]
+        
+        call("MakeTwoPolyTables", w_strings)                | generate the polynomials
+        
+        rootStrings[^top(w_strings)]
+        
+        rtrn = call("GetWFactors", w_strings, rootStrings, K_step, K_max)         | find the roots/poles
+        if (rtrn == 1)  then printl("init error: out of memory")
+        else if (rtrn == 2)  then printl("init error: W's not initialized")
+        else if (rtrn == 4)  then printl("init warning: could not find all roots")
+        
+        doneInit = true
+    }
+    
+    
+    
+    
+        | saveRoots(), loadRoots():  allow the user to bypass init() by retrieving the roots from a file (generally faster).
+        | The web page uses this feature for the default { l_max, K_max, K_step } settings
+    
+    saveRoots :: {
+        
+        fileName :: fileString :: headerString :: sizesString :: string
+        numRootStrings :: c1 :: int
+        rootStringsSizes :: [] int
+        
+        
+        code
+        
+        if trap(  { fileName } = args  ) /= passed  then (  printl("usage: myWLC.saveRoots(filename)"), return  )
+        else if not doneInit  then (  printl("saveRoots() error:  must first run init()"), return  )
+        
+        Wlm_fracs = top(w_strings)/6
+        headerString =! { current_l_max, current_K_max, current_K_step, Wlm_fracs, rs_token := (numRootStrings = top(rootStrings)) }
+        
+        rootStringsSizes[^numRootStrings]
+        for c1 in <1, numRootStrings>  rootStringsSizes[c1] = size(rootStrings[c1])
+        sizesString =! rootStringsSizes
+        
+        print_string(fileString, headerString, sizesString, rootStrings)
+        if trap(save(fileName, fileString)) /= passed  then printl("saveRoots error in saving file")               }
+    
+    
+    loadRoots :: {
+        
+        fileName :: fileString :: string
+        numRootStrings :: c1 :: stringPosition :: int
+        rootStringsSizes :: [] int
+        prelims :: { l_max, K_max, K_step, Wlm_fracs, numRootStrings }
+        
+        
+        code
+        
+        if trap( { fileName } = args ) /= passed  then (  printl("usage: myWLC.loadRoots(filename)"), return  )
+        if trap(fileString = load(fileName)) /= passed  then (  printl("loadRoots(): file not found"), return  )
+        
+        if trap(
+            prelims =! fileString[<1, size(prelims)>]
+            rootStrings[^numRootStrings]
+            rootStringsSizes[^numRootStrings]
+            rootStringsSizes[*] =! fileString[<size(prelims)+1, size(prelims)+size(rootStringsSizes)>]
+            
+            stringPosition = size(prelims)+size(rootStringsSizes)+1
+            for c1 in <1, numRootStrings>  (
+                rootStrings[c1] =! fileString[<stringPosition, stringPosition+rootStringsSizes[c1]-1>]
+                stringPosition = that+rootStringsSizes[c1]      )
+            
+        ) /= passed  then printl("loadRoots():  error reading file")
+        
+        current_l_max = l_max
+        current_K_max = K_max
+        current_K_step = K_step
+        
+        call("SetKVals", K_step, K_max)
+        doneInit = true
+    }
+    
+    
+    
+    
+        | density():  Calculate one of the distributions at given L, R, end-orientation using the pre-computed continued fractions & roots
+        | Either init() or loadRoots() must have been run prior to P().
+    
+    density :: {
+        
+        rtrn :: numKs :: c3 :: int
+        L :: N :: answer :: double
+        normR :: u0 :: uf :: n0 :: nf :: [3] double
+        result :: [2] double
+        G_list :: G_K_space :: [] double
+        init *:: *
+        
+        params :: {
+            
+            R :: u0 :: uf :: n0 :: nf :: { x :: y :: z :: double }
+            sum_tangent :: sum_twist :: bool
+            persistence_length :: twist_persistence_length :: unstressed_twist :: double
+            l :: theta_step_num :: phi_step_num :: sum_R :: int
+            
+                | setTwist():  converts a twist angle into a normal vector
+                | Used by the web page, but the user can also use this to specify a relative twist in P() rather than two normal vectors
+                | Example:  P( some_L, code, u0 = .., uf = .., { n0, nf } = setTwist(u0, uf, pi/2), ... )
+            
+            setTwist :: {
+                
+                my_n0 :: my_nf :: my_u0 :: my_uf :: *
+                my_n0 = @n0, my_nf = @nf, my_u0 = @u0, my_uf = @uf
+                
+                    | GTV() finds the unit n-vector corresponding to the given unit u-vector with the given rotation angle
+                
+                getTwistVector :: {
+                    
+                    cos_n_rot :: double
+                    perp :: z_axis :: v1 :: v2 :: v3 :: n :: rot :: [3] double
+                    z_axis[3] = 1
+                    
+                    
+                    code
+                    
+                        | make an un-rotated n-hat vector
+                    
+                    n = { cos(args[1]), sin(args[1]), 0 }
+                    
+                    
+                        | get rotation angle & unit rotation vector
+                    
+                    rot = cross(z_axis, args[2])
+                    if norm(rot) /= 0  then v3Mult(rot, 1/norm(rot))
+                    else  rot[1] = 1                     | won't affect final answer
+                    
+                    cos_n_rot = dot(args[2], z_axis)/norm(args[2])
+                    if cos_n_rot < -1  then cos_n_rot = -1
+                    else if cos_n_rot > 1  then cos_n_rot = 1
+                    
+                    
+                        | rotate the n-hat vector
+                    
+                    v1 = rot
+                    v3Mult(v1, dot(n, rot))
+                    
+                    v3 = cross(rot, n)
+                    v2 = cross(v3, rot)
+                    v3Mult(v2, cos_n_rot)
+                    v3Mult(v3, (1-cos_n_rot*cos_n_rot)^.5)
+                    
+                    n = v1
+                    v3Add(n, v2)
+                    v3Add(n, v3)
+                    
+                    return new(n)
+                }
+                
+                
+                    | returns the n-vector nf by rotating { u0, uf } --> { n0, --- }  (u0, uf, n0 given)
+                
+                rotateVector :: {
+                    
+                    omega_sq :: double
+                    u0 :: uf :: n0 :: n_rot :: omega :: n_par :: n_perp_old :: n_perp :: n_cross :: n_perp_rot :: [3] double
+                    
+                    
+                    code
+                    
+                    { u0, uf, n0 } = args
+                    n_rot[*] = 0
+                    
+                    
+                        | get the (unnormalized) rotation vector & rotation angle
+                    
+                    omega = cross(u0, uf)
+                    omega_sq = dot(omega, omega)
+                    if omega_sq < 1.e-30  then return new(n0)
+                    else if omega_sq > 1  then omega_sq = 1
+                    
+                    
+                        | calculate the components of the new vector
+                    
+                    n_par = omega
+                    v3Mult(n_par, dot(n0, omega)/omega_sq)
+                    
+                    n_perp_old = n0
+                    v3Sub(n_perp_old, n_par)
+                    
+                    n_perp = n_perp_old
+                    if dot(u0, uf) < 0  then v3Mult(n_perp, -(1-omega_sq)^.5)
+                    else  v3Mult(n_perp, (1-omega_sq)^.5)
+                    n_cross = cross(omega, n_perp_old)
+                    
+                    
+                        | add it up & return the total n_final
+                    
+                    n_rot = n_perp
+                    v3Add(n_rot, n_cross)
+                    v3Add(n_rot, n_par)
+                    
+                    return new(n_rot)
+                }
+                
+                n0 :: nf :: u0 :: uf :: [3] double
+                twist :: double
+                
+                
+                code
+                
+                if trap(
+                    { twist } = args
+                ) /= passed  then (
+                    printl("usage: setTwist(twist_angle)")
+                    return      )
+                
+                u0 = my_u0
+                uf = my_uf
+                
+                if dot(u0, u0) == 0  then u0[3] = 1          | we need to do this even if we're summing (oversight in C code)
+                if dot(uf, uf) == 0  then uf[3] = 1
+                n0 = getTwistVector(0, u0)
+                nf = rotateVector(u0, uf, getTwistVector(twist, u0))
+                
+                my_n0 = n0
+                my_nf = nf
+            }
+        }
+        
+        
+        defaultInit :: {
+            
+            code
+            
+            { persistence_length, twist_persistence_length, unstressed_twist } = { 1, 2.08, 98 }
+            l = current_l_max
+            
+            R = { 0, 0, 0 }
+            u0 = uf = n0 = nf = R
+            u0[3] = uf[3] = n0[1] = nf[1] = 1
+            
+            sum_R = 0, sum_tangent = sum_twist = false
+            theta_step_num = phi_step_num = 100        }
+        
+        init = @defaultInit                | change w/ =@
+        
+        
+        code
+        
+        (params<<init)()
+        
+        if trap( ;
+            { L } = args
+            (params<<args)()
+        ) /= passed  then (
+            printl("usage: result = EF.P(L [ ; l/R[]/u0[]/uf[]/n0[]/nf[]/persistence_length/",
+                   "twist_persistence_length/unstressed_twist/sum_R/sum_tangent/sum_twist/theta_step_num/phi_step_num = values])")
+            return      )
+        else if not doneInit and params.sum_R /= 2 and not countComputations  then (
+            printl("P() error:  must first run init()")
+            return      )
+        
+        if params.l > current_l_max and params.sum_R /= 2  then (
+            printl("P():  l cannot be greater than the initialized l (the first parameter passed to init())")
+            return      )
+        
+        if countComputations  then (
+            
+            tp := params.theta_step_num * params.phi_step_num
+            numKs = ceil(K_max/K_step+0.5)
+            
+            if params.sum_R < 2  then (
+                if not params.sum_tangent  then (
+                    if not params.sum_twist  then (
+                        if params.u0 /= params.uf or params.n0 /= params.nf or dot(params.R, params.R) /= 0  then &
+                                | contributions to time:  (a) adding one_K_element;  (b) multiplying Wigners;
+                                | (c) Gllmj (~l_max^2 from inv-Laplace);  (d) init & final loops over Ks/tp
+                            gbl_time = that + 2e-08*l_max^4*numKs*tp + 4e-06*l_max^4*tp + 1.6e-07*l_max^6*numKs + 1.7e-06*numKs*tp
+                        else  &      | cyclization, consisting of:  (a) Gllmj;  (b) the rest of the stuff in the lmj loop
+                            gbl_time = that + 1.5e-08*l_max^5*numKs + 3.2e-06*l_max^3*numKs     )
+                    else  gbl_time = that + 3e-08*l_max^3*numKs*tp + 8e-06*l_max^3*tp + 8e-7*l_max^5*numKs + 1e-06*numKs*tp     )
+                else  gbl_time = that + 8e-10*l_max^2*numKs*tp + 7e-07*l_max^2*tp + 3e-07*l_max^4*numKs + 6e-07*numKs*tp        )
+            else  (
+                if not params.sum_tangent  then (
+                    if not params.sum_twist  then &             | sum R
+                        gbl_time = that + 7e-06*l_max^3
+                    else  gbl_time = that + 1e-05*l_max^2   )   | sum R, twist
+                else  gbl_time = that + 1e-5*l_max     )        | sum R, tangents
+            
+            gbl_size = that + 2*numKs * (params.theta_step_num*params.phi_step_num+1) * size(double)
+            
+            return          )
+        
+        numKs = ceil(current_K_max/current_K_step+0.5)
+        
+        for c3 in <1, 3> &
+            normR[c3] = params.R[c3]/params.persistence_length/2
+        u0 = params.u0
+        uf = params.uf
+        n0 = params.n0
+        nf = params.nf
+        
+        N = L/params.persistence_length/2
+        G_list[^2*numKs]
+        G_K_space[^2*numKs*params.theta_step_num*params.phi_step_num]
+        
+        rtrn = call("CalcG", params.l, normR, u0, n0, uf, nf, N, params.theta_step_num, params.phi_step_num,
+                    params.persistence_length/params.twist_persistence_length - 1, 2*params.persistence_length*params.unstressed_twist,
+                    params.sum_R, params.sum_tangent, params.sum_twist, result, rootStrings, G_list, G_K_space, K_step, K_max)
+        
+        if (rtrn == 10)  then (  printl("EF.P(): Convergence error -- no result returned"), return *  )
+        else if (rtrn == 11)  then (  printl("EF.P(): Null Wlm polynomial -- no result returned"), return *  )
+        else if (rtrn == 12)  then (  printl("EF.P(): Numerical error -- no result returned"), return *  )
+        else if (rtrn /= passed)  then (  printl("EF.P(): initialization error"), return *  )
+        
+        answer = result[1]
+        if params.sum_R == 0  then answer = that/(2*params.persistence_length)^3
+        else if params.sum_R == 1  then answer = that/(2*params.persistence_length)
+        
+        return new(answer)
+    }
+    
+    
+    
+    
+        | p_contributions():  saves the (real) contributions of each theta/phi/K to a file named "ThetaContribution", etc.
+    
+    p_contributions :: {
+        
+        theta_contributions :: phi_contributions :: K_contributions :: [] double
+        ct :: cp :: cK :: cI :: int
+        
+        
+        code
+        
+        theta_contributions[^0], theta_contributions[^P.params.theta_step_num]
+        phi_contributions[^0], phi_contributions[^P.params.phi_step_num]
+        K_contributions[^0], K_contributions[^P.numKs]
+        
+        cI = 1
+        for ct in <1, P.params.theta_step_num>  (
+        for cp in <1, P.params.phi_step_num>  (
+        for cK in <1, P.numKs>  (
+            
+            theta_contributions[ct] = that + P.G_K_space[cI]
+            phi_contributions[cp] = that + P.G_K_space[cI]
+            K_contributions[cK] = that + P.G_K_space[cI]
+            
+            cI = that + 2           | skip imaginary components
+        )))
+        
+        saveTable("ThetaContribution", theta_contributions)
+        saveTable("PhiContribution", phi_contributions)
+        saveTable("KContribution", K_contributions)
+    }
+    
+    
+    
+    
+        | printWFraction(), printWRoots():  write out to the screen the continued fractions/their roots that were generated by init()
+    
+    printWFraction :: {
+        
+        numerator :: denominator :: polyType
+        
+        
+        code
+        
+        if not doneInit  then (
+            printl("printWFraction() error:  must first run init()")
+            return      )
+        
+        WPrintTemplate(
+            "printWFraction"
+            { code, numerator.terms[*].exponent[^2], denominator.terms[*].exponent[^2] }
+            { code, numerator.terms[*].exponent[^2], denominator.terms[*].exponent[^2] }
+            {
+                code
+                (numTerms::int) =! extract(args[1][args[2]], 5, 8)
+                numerator.terms[^numTerms]
+                numerator =! args[1][args[2]]
+                
+                numTerms =! extract(args[1][args[2]+1], 5, 8)
+                denominator.terms[^numTerms]
+                denominator =! args[1][args[2]+1]                }
+            w_strings
+            { code, printPoly(numerator), print(" / "), printPoly(denominator) }
+            args        )
+    }
+    
+    
+    printWRoots :: {
+        
+        numeratorRoots :: denominatorRoots :: [] double
+        (K_index::int) = 0
+        cdouble :: { r::i :: double }
+        
+        
+        printRoots :: {
+            
+            c1 :: int
+            printComplexParen :: { code, print("(", args[1], " + ", args[2], "*i", ")") }
+            
+            
+            code
+            
+            printComplexParen(args[1][1], args[1][2])
+            for c1 in <2, top(args[1]) / 2>  (
+                print("*[p - ")
+                printComplexParen(args[1][2*c1-1], args[1][2*c1])
+                print("]")      )
+        }
+        
+        
+        code
+        
+        if not doneInit  then (
+            printl("printWRoots() error:  must first run init()")
+            return      )
+        
+        WPrintTemplate( "printWRoots", {}, {},
+            {
+                code
+                (numTerms::int) = size(args[1][args[2]]) / floor((current_K_max-current_K_step/2)/current_K_step + 0.5)/size(cdouble)
+                numeratorRoots[*] =! args[1][args[2]][<K_index*numTerms*size(cdouble)+1, (K_index+1)*numTerms*size(cdouble)>]
+                
+                (numTerms::int) = size(args[1][args[2]+1]) / floor((current_K_max-current_K_step/2)/current_K_step + 0.5)/size(cdouble)
+                denominatorRoots[*] =! args[1][args[2]+1][<K_index*numTerms*size(cdouble)+1, (K_index+1)*numTerms*size(cdouble)>]        }
+            rootStrings
+            { code, printRoots(numeratorRoots), print(" / "), printRoots(denominatorRoots) }
+            args        )
+    }
+    
+    
+    WPrintTemplate :: {         | used by printWFraction(), printWRoots()
+        
+        errCode :: c1 :: numStringID :: int
+        
+        argSpace :: {  Wlm := 1, w_plus := 2, w_minus := 3  }
+        
+        
+        code
+        
+        Wlm_fracs = top(w_strings)/6
+        
+        argSpace[^0], argSpace#0()
+        
+        errCode = trap(
+            
+            if top(args) /= 7  then throw(1)
+            
+            (argSpace<<args[7])()
+            if argSpace[4] < 1 or argSpace[4] > 3  then throw(1)
+            
+            if argSpace[5] > current_l_max or argSpace[5] < 0 or abs(argSpace[6]) > argSpace[5] or abs(argSpace[7]) > argSpace[5]  then throw(2)
+            if abs(argSpace[6]) < abs(argSpace[7])  then throw(3)
+            
+            numStringID = 1
+            for c1 in <0, argSpace[5]-1>  &
+                numStringID = that+((c1+1)*(c1+2)/2)*2
+            numStringID = that + 2*Wlm_fracs*(argSpace[4]-1) + 2*argSpace[6]*(argSpace[6]+1)/2 + 2*(argSpace[7])
+            
+            args[2]()
+        )
+        
+        if errCode /= passed  then (
+            if errCode == 2  then &
+                printl(args[1], ":  l, m, or j index out of range")
+            else if errCode == 3  then &
+                printl(args[1], ": need positive m, j where m >= j (changing m, j doesn't affect anything; negating m or j complex-congugates everything)")
+            else  &
+                printl("usage: ", args[1], "( ; w_minus/w_plus/Wlm, l, m [, j])")
+            
+            return 1        )
+        
+        if trap(args[4](args[5], numStringID)) /= passed  then (
+            printl(args[1], ": initialization error")
+            return 2        )
+        
+        args[6]()
+    }
+}
+
+
+
+
+| printPoly():  outputs a polynomial to the screen (used by printWFractions())
+
+printPoly :: {
+    
+    thePoly :: polyType
+    c1 :: c2 :: int
+    
+    PolyVarNames :: { "p", "iK" }
+    
+    
+    code
+    
+    if trap(
+        if top(args) /= 1  then throw(1)
+        thePoly = @args[1]
+        if thePoly.header.numVariables /= 2 and thePoly.header.numVariables /= 3  then throw(2)
+    ) /= passed  then (
+        printl("usage: printPoly(myPoly)")
+        return 1            )
+    
+    for c1 in <1, thePoly.header.numTerms>  (
+        if c1 > 1  then print(" + ")
+        print(thePoly.terms[c1].coef)
+        for c2 in <1, thePoly.header.numVariables>  (
+            if thePoly.terms[c1].exponent[c2] /= 0  then (
+                print("*", PolyVarNames[c2])
+                if thePoly.terms[c1].exponent[c2] > 1  then (
+                    print("^", thePoly.terms[c1].exponent[c2])
+    )   )   )   )
+    
+    if thePoly.header.numTerms == 0  then print("0")
+}
+
+
+
+
+| bestLKK():  attempts to find the least stringent l_max, K_max and K_step continued-fraction parameters satisfying the given tolerances
+| ** can take a while **
+
+bestLKK :: {
+    
+    l :: c1 :: numAdjustmentAttempts :: int
+    conservativeAnswer :: newAnswer :: newHigh :: newLow :: k_max :: k_step :: L :: double
+    params :: { l, k_step, k_max }
+    up :: { 0, 0.5, 2 }
+    madeAChange :: improved :: bool
+    theChain :: EF
+    theArgs :: *
+    
+    errorTolerance := 0.001
+    maxAdjustmentAttempts := 1000
+    maxIterations := 2
+    bracketingTolerance :: { 1, .1, .4 }
+    
+    inBounds :: {  code, return abs(args[1]-args[2])/abs(conservativeAnswer) <= errorTolerance  }
+    
+    trialFunction :: {
+        
+        code
+        
+        theChain.init(l, k_step, k_max)
+        
+        return theChain.P(L, code, (this<<theArgs)())
+    }
+    
+    
+    code
+    
+    if trap(
+        if top(args) /= 1  then throw(1)
+        theArgs = @args
+        L = args[1]
+    ) /= passed  then (
+        printl("usage: { { l, k_max, k_step }, answer, best_answer } = bestLKK(L [ ; P parameter code])")
+        return          )
+    
+    params = { 0, 1, 1 }        | default initial guess
+    
+    numIterations := 0
+    loop
+        madeAChange = false
+        if trap(conservativeAnswer = trialFunction()) /= passed  then return        | can happen first time if user passes params incorrectly
+        
+        for c1 in <1, 3>  (
+            numAdjustmentAttempts = 0
+            loop
+                if c1 > 1  then params[c1] = that*up[c1]
+                else  params[c1] = that+1
+                
+                newAnswer = trialFunction()
+                improved = not inBounds(conservativeAnswer, newAnswer)
+                if improved  then madeAChange = true
+                
+                sprint(params, conservativeAnswer, newAnswer)
+                conservativeAnswer = newAnswer            | keep the conservative guess regardless
+                numAdjustmentAttempts = that+1
+            until not improved or numAdjustmentAttempts == maxAdjustmentAttempts       )
+        
+        params[1] = that-1, params[2] = that/up[2], params[3] = that/up[3]
+        
+        if madeAChange  then (
+        for c1 in <2, 3>  (
+            newHigh = params[c1]
+            newLow = params[5-c1]
+            
+            while abs(newHigh-newLow) > bracketingTolerance[c1]  do (
+                params[c1] = (newHigh+newLow)/2
+                newAnswer = trialFunction()
+                if not inBounds(newAnswer, conservativeAnswer)  then newLow = params[c1]
+                else  newHigh = params[c1]
+                sprint(params, newAnswer, conservativeAnswer)       )
+            
+            params[c1] = newHigh
+        ))
+        
+        numIterations = that+1
+    until not madeAChange or numIterations == maxIterations
+    
+    newAnswer = trialFunction()
+    return new({ params, newAnswer, conservativeAnswer })
+}
+
+
+
+
+| Wigner():  calculates a Wigner function as defined by Yamakawa; returns { real, imag }
+
+Wigner :: {
+    
+    theta :: phi :: psi :: angle :: W_result :: real::imag :: double
+    l :: rtrn :: m :: j :: int
+    
+    
+    code
+    
+    if trap(
+        { l, m, j, theta, phi, psi } = args
+    ) /= passed then  (
+        printl("usage:  { real, imag } = Wigner(l, m, j, theta, phi, psi)")
+        return 1        )
+    
+    call("Wigner", l, m, j, theta, W_result)
+    
+    angle = m*phi + j*psi
+    real = W_result*cos(angle)
+    imag = W_result*sin(angle)
+    
+    return new({ real, imag })
+}

@@ -1,0 +1,272 @@
+|*  Tests calculation of omega, phi, psi based on given u0, n0, uf, nf
+
+The first part just tests EulerRotate in this test file.
+
+To use the last part of the check (which uses the backed-out values of the Euler angles of given vectors to reconstitute the vectors & compare w/ originals),
+the following trace block was put at the end of GetAngles() in Eigenfunction.cpp:
+
+    {
+        vector_3 temp_x;
+        
+        fillVector(&temp_x, 1, pi/2, 0);
+        printf("%g, %g, %g    ----    ", acos(dot(u0, K)), AngleBetween(temp_x, u0_perp, *K), psi_0);
+        printf("%g, %g, %g\n", acos(dot(uf, K)), AngleBetween(temp_x, uf_perp, *K), psi_f);
+    }
+
+Run the script once to find the backed-out Euler angles.  Then paste those into the second set of EulerRotate() calls (inside the sprint()
+on the final line of each block); then re-run the script so the vectors can be compared.
+
+*|
+
+
+EulerRotate :: {
+    
+    vMult :: {
+        
+        v :: ans :: [3] double
+        s :: double
+        
+        code
+        
+        { v, s } = args
+        
+        ans[1] = v[1]*s
+        ans[2] = v[2]*s
+        ans[3] = v[3]*s
+        
+        return new(ans)
+    }
+    
+    
+    vAdd :: {
+        
+        a :: b :: ans :: [3] double
+        
+        code
+        
+        { a, b } = args
+        
+        ans[1] = a[1] + b[1]
+        ans[2] = a[2] + b[2]
+        ans[3] = a[3] + b[3]
+        
+        return new(ans)
+    }
+    
+    
+    dot :: {
+        
+        a :: b :: [3] double
+        ans :: double
+        
+        code
+        
+        { a, b } = args
+        
+        ans = a[1]*b[1] + a[2]*b[2] + a[3]*b[3]
+        
+        return new(ans)
+    }
+    
+    
+    cross :: {
+        
+        a :: b :: ans :: [3] double
+        
+        code
+        
+        { a, b } = args
+        
+        ans[1] = a[2]*b[3] - a[3]*b[2]
+        ans[2] = a[3]*b[1] - a[1]*b[3]
+        ans[3] = a[1]*b[2] - a[2]*b[1]
+        
+        return new(ans)
+    }
+    
+    
+    rotateVector :: {
+        
+        vector :: axis :: result :: v_par :: v_perp :: v_cross :: [3] double
+        angle :: double
+        
+        code
+        
+        { vector, axis, angle } = args
+        
+        v_par = vMult(axis, dot(vector, axis))
+        v_perp = vAdd(vector, vMult(v_par, -1))
+        v_cross = cross(axis, v_perp)
+        result = vAdd(v_par, vAdd(vMult(v_perp, cos(angle)), vMult(v_cross, sin(angle))))
+        
+        return new(result)
+    }
+    
+    
+    theta :: phi :: psi :: double
+    u :: n :: u1 :: n1 :: n2 :: n3 :: [3] double
+    result :: [2][3] double
+    
+    
+    code
+    
+    if trap(
+        { theta, phi, psi } = args
+    ) /= passed  then (
+        printl("usage:  EulerRotate(theta, phi, psi)")
+        return      )
+    
+    u = { 0, 0, 1 }
+    n = { 1, 0, 0 }
+    n1 = rotateVector(n, u, phi)
+    u1 = rotateVector(u, cross(u, n1), theta)
+    n2 = rotateVector(n1, cross(u, n1), theta)
+    n3 = rotateVector(n2, u1, psi)
+    
+    result = { u1, n3 }
+    
+    return new(result)
+}
+
+
+| first test the test routine EulerRotate()
+
+sprint(EulerRotate.vMult({2, 3, 4}, -3))
+sprint(EulerRotate.vAdd({1, 3, 4}, {1, 2, -3}))
+sprint(EulerRotate.dot({9, -2, 4}, {-1, -2, 3}))
+sprint(EulerRotate.cross({1, 2, -3}, {-2, 1, -3}))
+
+printl()
+
+sprint(EulerRotate.rotateVector({.5^.5, .5^.5, 0}, {0, 1, 0}, pi/2))
+sprint(EulerRotate.rotateVector({.5^.5, .5^.5, 0}, {0, 1, 0}, -pi/2))
+sprint(EulerRotate.rotateVector({.5^.5, .5^.5, 0}, {0, 0, 1}, pi/2))
+sprint(EulerRotate.rotateVector({.5^.5, .5^.5, 0}, {.5^.5, 0, 0.5^.5}, pi/2))
+
+printl()
+
+sprint(EulerRotate(pi/2, pi/4, pi))
+sprint(EulerRotate(pi/4, pi/4, pi))
+sprint(EulerRotate(pi/2, pi/2, pi/4))
+sprint(EulerRotate(-2*pi, 0, -pi/6))
+
+printl()
+
+
+
+| now test the C code
+
+t::EF
+t.init(0, 1,1)
+
+fin :: init :: *
+
+| first, second pairs of {u, n} vectors should be the same
+init = @EulerRotate(pi/2, pi/2, 0)
+fin = @EulerRotate(pi, 0, -pi/2)
+t.p(1; uf = fin[1], u0 = init[1], nf = fin[2], n0 = init[2], sum_R = 2)
+sprint(init, fin)
+sprint(EulerRotate(1.5708, 1.5708, -0), EulerRotate(3.14159, 1.5708, 0)), printl()
+
+init = @EulerRotate(pi/2, pi/2, 0)
+fin = @EulerRotate(0, pi, -pi/2)
+t.p(1; uf = fin[1], u0 = init[1], nf = fin[2], n0 = init[2], sum_R = 2)
+sprint(init, fin)
+sprint(EulerRotate(1.5708, 1.5708, -0), EulerRotate(0, 1.5708, 0)), printl()
+
+init = @EulerRotate(pi/4, pi/4, 0)
+fin = @EulerRotate(0, pi/2, -pi/4)
+t.p(1; uf = fin[1], u0 = init[1], nf = fin[2], n0 = init[2], sum_R = 2)
+sprint(init, fin)
+sprint(EulerRotate(0.785398, 0.785398, -0), EulerRotate(0, 0.785398, 0)), printl()
+
+init = @EulerRotate(pi/4, 0, pi/4)
+fin = @EulerRotate(-pi/4, 0, -pi/2)
+t.p(1; uf = fin[1], u0 = init[1], nf = fin[2], n0 = init[2], sum_R = 2)
+sprint(init, fin)
+sprint(EulerRotate(0.785398, -0, 0.785398), EulerRotate(0.785398, -3.14159, 1.5708)), printl()
+
+init = @EulerRotate(1, -2, 2.5)
+fin = @EulerRotate(.4, .8, -.3)
+t.p(1; uf = fin[1], u0 = init[1], nf = fin[2], n0 = init[2], sum_R = 2)
+sprint(init, fin)
+sprint(EulerRotate(1, -2, 2.5), EulerRotate(0.4, 0.8, -0.3)), printl()
+
+init = @EulerRotate(10, -20, 113)
+fin = @EulerRotate(.4, .8, -.3)
+t.p(1; uf = fin[1], u0 = init[1], nf = fin[2], n0 = init[2], sum_R = 2)
+sprint(init, fin)
+sprint(EulerRotate(2.56637, 1.99115, 3.04426), EulerRotate(0.4, 0.8, -0.3)), printl()
+
+init = @EulerRotate(-3, 20, 12)
+fin = @EulerRotate(12, 18, 24)
+t.p(1; uf = fin[1], u0 = init[1], nf = fin[2], n0 = init[2], sum_R = 2)
+sprint(init, fin)
+sprint(EulerRotate(3, -1.99115, 2.57522), EulerRotate(0.566371, 2.29204, 2.00885)), printl()
+
+init = @EulerRotate(1, 15, 45)
+fin = @EulerRotate(-1, 2, -3)
+t.p(1; uf = fin[1], u0 = init[1], nf = fin[2], n0 = init[2], sum_R = 2)
+sprint(init, fin)
+sprint(EulerRotate(1, 2.43363, 1.0177), EulerRotate(1, -1.14159, 0.141593)), printl()
+
+init = @EulerRotate(-3.3, 1, 100)
+fin = @EulerRotate(-20, -30, -40)
+t.p(1; uf = fin[1], u0 = init[1], nf = fin[2], n0 = init[2], sum_R = 2)
+sprint(init, fin)
+sprint(EulerRotate(2.98319, 1, -0.530965), EulerRotate(1.15044, -1.72567, 0.840704)), printl()
+
+|*
+correct answers are:
+
+{ -6, -9, -12 }
+{ 2, 5, 1 }
+7
+{ -3, 9, 5 }
+
+{ 4.32978e-17, 0.707107, -0.707107 }
+{ 4.32978e-17, 0.707107, 0.707107 }
+{ -0.707107, 0.707107, 0 }
+{ -0.146447, 0.5, 0.853553 }
+
+{ { 0.707107, 0.707107, 6.12323e-17 }, { -1.29893e-16, 4.32978e-17, 1 } }
+{ { 0.5, 0.5, 0.707107 }, { -0.5, -0.5, 0.707107 } }
+{ { 6.12323e-17, 1, 6.12323e-17 }, { -0.707107, 8.65956e-17, -0.707107 } }
+{ { 2.44929e-16, 0, 1 }, { 0.866025, -0.5, -2.12115e-16 } }
+
+1.5708, 1.5708, -0    ----    3.14159, 1.5708, 0
+{ { 6.12323e-17, 1, 6.12323e-17 }, { 3.7494e-33, 6.12323e-17, -1 } }, { { 1.22465e-16, 0, -1 }, { -6.12323e-17, -1, -7.4988e-33 } }
+{ { -3.67321e-06, 1, -3.67321e-06 }, { 1.34924e-11, -3.67321e-06, -1 } }, { { -9.74718e-12, 2.65359e-06, -1 }, { 3.67321e-06, -1, -2.65359e-06 } }
+
+1.5708, 1.5708, -0    ----    0, 1.5708, 0
+{ { 6.12323e-17, 1, 6.12323e-17 }, { 3.7494e-33, 6.12323e-17, -1 } }, { { 0, 0, 1 }, { 6.12323e-17, 1, 0 } }
+{ { -3.67321e-06, 1, -3.67321e-06 }, { 1.34924e-11, -3.67321e-06, -1 } }, { { 0, 0, 1 }, { -3.67321e-06, 1, 0 } }
+
+0.785398, 0.785398, -0    ----    0, 0.785398, 0
+{ { 0.5, 0.5, 0.707107 }, { 0.5, 0.5, -0.707107 } }, { { 0, 0, 1 }, { 0.707107, 0.707107, 0 } }
+{ { 0.5, 0.5, 0.707107 }, { 0.5, 0.5, -0.707107 } }, { { 0, 0, 1 }, { 0.707107, 0.707107, 0 } }
+
+0.785398, -0, 0.785398    ----    0.785398, -3.14159, 1.5708
+{ { 0.707107, 0, 0.707107 }, { 0.5, 0.707107, -0.5 } }, { { -0.707107, 0, 0.707107 }, { 4.32978e-17, -1, 4.32978e-17 } }
+{ { 0.707107, 0, 0.707107 }, { 0.5, 0.707107, -0.5 } }, { { -0.707107, -1.87637e-06, 0.707107 }, { 5.25094e-06, -1, 2.59735e-06 } }
+
+1, -2, 2.5    ----    0.4, 0.8, -0.3
+{ { -0.350175, -0.765147, 0.540302 }, { 0.724322, 0.144546, 0.674139 } }, { { 0.27131, 0.279352, 0.921061 }, { 0.825042, 0.425327, -0.372026 } }
+{ { -0.350175, -0.765147, 0.540302 }, { 0.724322, 0.144546, 0.674139 } }, { { 0.27131, 0.279352, 0.921061 }, { 0.825042, 0.425327, -0.372026 } }
+
+2.56637, 1.99115, 3.04426    ----    0.4, 0.8, -0.3
+{ { -0.222005, 0.496661, -0.839072 }, { -0.429511, 0.722742, 0.541446 } }, { { 0.27131, 0.279352, 0.921061 }, { 0.825042, 0.425327, -0.372026 } }
+{ { -0.222006, 0.496662, -0.839071 }, { -0.429509, 0.722743, 0.541447 } }, { { 0.27131, 0.279352, 0.921061 }, { 0.825042, 0.425327, -0.372026 } }
+
+3, -1.99115, 2.57522    ----    0.566371, 2.29204, 2.00885
+{ { -0.0575885, -0.128835, -0.989992 }, { 0.148946, -0.981649, 0.119085 } }, { { -0.354308, 0.402959, 0.843854 }, { -0.443721, -0.866781, 0.227603 } }
+{ { -0.0575887, -0.128835, -0.989992 }, { 0.148947, -0.981648, 0.119085 } }, { { -0.35431, 0.402959, 0.843854 }, { -0.443719, -0.866782, 0.227602 } }
+
+1, 2.43363, 1.0177    ----    1, -1.14159, 0.141593
+{ { -0.639255, 0.547198, 0.540302 }, { -0.768956, -0.461848, -0.442043 } }, { { 0.350175, -0.765147, 0.540302 }, { 0.350915, -0.427652, -0.83305 } }
+{ { -0.639256, 0.547198, 0.540302 }, { -0.768956, -0.461847, -0.442045 } }, { { 0.350178, -0.765146, 0.540302 }, { 0.350916, -0.427651, -0.83305 } }
+
+2.98319, 1, -0.530965    ----    1.15044, -1.72567, 0.840704
+{ { 0.0852304, 0.132738, -0.98748 }, { -0.0339875, -0.990122, -0.136027 } }, { { -0.140823, -0.902019, 0.408082 }, { 0.694213, -0.383843, -0.608878 } }
+{ { 0.0852279, 0.132735, -0.987481 }, { -0.0339878, -0.990122, -0.136023 } }, { { -0.140826, -0.902017, 0.408086 }, { 0.694211, -0.383848, -0.608877 } }
+*|
