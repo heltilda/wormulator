@@ -5,7 +5,7 @@ TO INSTALL:
 * install the GNU Scientific Library
 * download the C++ version of Cicada Script (cicadascript.sourceforge.net)
 * download the Wormulator files into the Cicada directory
- * overwrite Cicada's userfn.cpp, userfn.h, and Makefile with the Wormulator's versions of these files
+* * overwrite Cicada's userfn.cpp, userfn.h, and Makefile with the Wormulator's versions of these files
 * from the command line, navigate to the Wormulator directory and type 'make wormulator'
 * to run from the command line, navigate to the Wormulator directory and type './wormulator'
 
